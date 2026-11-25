@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Check tag matches version
+        shell: pwsh
+        run: |
+          $v = python -c "import re,pathlib; print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/strip_metadata/__init__.py').read_text()).group(1))"
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match version $v" }
+
+      - name: Build exe
+        run: |
+          python -m pip install -e ".[build,dnd]"
+          python scripts/build_exe.py
+
+      - name: Smoke test exe
+        run: python scripts/smoke_test.py dist/StripMetadata.exe
+
+      - name: Package (exe alone, and exe + ffmpeg for videos)
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist/StripMetadata.exe "release/StripMetadata-$tag.exe"
+
+          Invoke-WebRequest https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_src
+          $bin = Get-ChildItem ffmpeg_src -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          $ffroot = $bin.Directory.Parent.FullName
+          $pkg = "pkg/StripMetadata"
+          New-Item -ItemType Directory -Force "$pkg/ffmpeg" | Out-Null
+          Copy-Item dist/StripMetadata.exe $pkg
+          Copy-Item "$($bin.Directory.FullName)/ffmpeg.exe", "$($bin.Directory.FullName)/ffprobe.exe" "$pkg/ffmpeg"
+          Copy-Item "$ffroot/LICENSE" "$pkg/ffmpeg/LICENSE.txt"
+          "ffmpeg build from https://www.gyan.dev/ffmpeg/builds/ ($(Split-Path $ffroot -Leaf)). Source code: https://ffmpeg.org/download.html" | Set-Content "$pkg/ffmpeg/README.txt"
+          Compress-Archive -Path $pkg -DestinationPath "release/StripMetadata-$tag-with-ffmpeg.zip"
+
+          Get-ChildItem release | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content release/SHA256SUMS.txt
+          Get-Content release/SHA256SUMS.txt
+
+      - name: Smoke test packaged ffmpeg build (video)
+        shell: pwsh
+        run: python scripts/smoke_test.py pkg/StripMetadata/StripMetadata.exe --video "pkg/StripMetadata/ffmpeg/ffmpeg.exe"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            **下載哪一個？**
+            - `StripMetadata-${{ github.ref_name }}-with-ffmpeg.zip`：解壓後執行 `StripMetadata.exe`，相片和影片都能處理（建議）。
+            - `StripMetadata-${{ github.ref_name }}.exe`：單一檔案，只處理相片；電腦已裝 ffmpeg 的話也能處理影片。
+
+            Windows 第一次開啟可能跳出「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」。

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strip-metadata"
+dynamic = ["version"]
+description = "Remove EXIF, GPS and C2PA metadata from photos and videos, losslessly"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dnd = ["tkinterdnd2>=0.4"]
+dev = ["pytest>=8", "ruff>=0.6"]
+build = ["pyinstaller>=6.10"]
+
+[project.scripts]
+strip-metadata = "strip_metadata.cli:main"
+
+[project.gui-scripts]
+strip-metadata-gui = "strip_metadata.gui:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "strip_metadata.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
