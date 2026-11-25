@@ -139,6 +139,17 @@ def test_broken_file_left_untouched(tmp_path):
     assert p.read_bytes() == b"\xff\xd8\xff\xe1\x00\x10abc"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows file locking")
+def test_file_open_elsewhere_gives_clear_message(tmp_path):
+    p = make_png(tmp_path / "x.png")
+    before = p.read_bytes()
+    with open(p, "rb"):  # like a browser playing the file: replacing it is refused
+        with pytest.raises(StripError, match="其他程式開啟"):
+            strip_file(p)
+    assert p.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [p]  # no temp file left behind
+
+
 def test_scan_recurses_and_reports_unsupported(media_dir):
     (media_dir / ".git").mkdir()
     (media_dir / ".git" / "skip.png").write_bytes(b"x")

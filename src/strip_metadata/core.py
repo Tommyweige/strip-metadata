@@ -267,6 +267,9 @@ def strip_file(path: Path, keep_orientation: bool = True, dry_run: bool = False)
             tmp.write_bytes(new)
             _replace_keep_times(path, tmp)
         return CLEANED
+    except PermissionError as e:
+        raise StripError("檔案正被其他程式開啟（例如瀏覽器或播放器正在播放、預覽），或是唯讀檔；"
+                         "關掉那個程式後再試一次") from e
     except OSError as e:
         raise StripError(f"讀寫失敗：{e.strerror or e}") from e
     finally:
