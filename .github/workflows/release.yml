@@ -26,7 +26,7 @@ jobs:
       - name: Check tag matches version
         shell: pwsh
         run: |
-          $v = python -c "import re,pathlib; print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/strip_metadata/__init__.py').read_text()).group(1))"
+          $v = (Select-String -Path src/strip_metadata/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
           if ("v$v" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match version $v" }
 
       - name: Build exe
