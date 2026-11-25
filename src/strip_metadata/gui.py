@@ -6,13 +6,26 @@ import queue
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import __version__
+from . import __version__, integration, updates
 from .cli import fmt_time, log_dir
-from .core import CLEAN, CLEANED, VIDEO_EXT, StripError, find_tool, scan, strip_file
+from .core import (
+    CLEAN,
+    CLEANED,
+    VIDEO_EXT,
+    Options,
+    StripError,
+    copy_destination,
+    copy_root,
+    find_tool,
+    scan,
+    strip_file,
+)
+from .settings import Settings
 
 try:  # drag & drop onto the window; the app still works without it
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -22,41 +35,83 @@ except Exception:  # pragma: no cover - optional dependency
 
 FONT = "Microsoft JhengHei UI"
 ACCENT = "#2563eb"
+WARN = "#b45309"
+BATCH_WAIT = 0.4  # seconds to collect paths arriving from several right-click launches
 
 
 class App:
-    def __init__(self, root: tk.Tk, confirm: Callable[[str, str], bool] | None = None):
+    def __init__(self, root: tk.Tk, confirm: Callable[[str, str], bool] | None = None,
+                 settings: Settings | None = None, settings_path: Path | None = None,
+                 fetch_update: Callable[[], tuple[str, str] | None] | None = None):
         self.root = root
         self.confirm = confirm or (lambda title, msg: messagebox.askokcancel(title, msg, parent=root))
+        self.settings = settings or Settings.load(settings_path)
+        self.settings_path = settings_path
+        self.fetch_update = fetch_update or updates.fetch_latest
         self.q: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
         self.state = "idle"  # idle | scanning | running | done
         self.counts = {CLEANED: 0, CLEAN: 0, "failed": 0}
+        self.failed: list[Path] = []
+        self.roots: list[Path] = []
+        self.pending: list[Path] = []
+        self.pending_since = 0.0
         self.log_path: Path | None = None
-        self.keep_orientation = tk.BooleanVar(value=True)
+        self.update_info: tuple[str, str] | None = None
+
+        s = self.settings
+        self.keep_orientation = tk.BooleanVar(value=s.keep_orientation)
+        self.keep_workflow = tk.BooleanVar(value=s.keep_workflow)
+        self.save_copy = tk.BooleanVar(value=s.save_copy)
+        self.keep_dates = tk.BooleanVar(value=s.keep_dates)
+        self.check_updates = tk.BooleanVar(value=s.check_updates)
         self.dry_run = tk.BooleanVar(value=False)
+        for name in ("keep_orientation", "keep_workflow", "save_copy", "keep_dates", "check_updates"):
+            getattr(self, name).trace_add("write", lambda *_: self._save_settings())
+
         self._build()
         self.root.after(50, self._poll)
+        self._maybe_check_updates()
+
+    # ------------------------------------------------------------ settings
+    def _save_settings(self) -> None:
+        s = self.settings
+        s.keep_orientation = self.keep_orientation.get()
+        s.keep_workflow = self.keep_workflow.get()
+        s.save_copy = self.save_copy.get()
+        s.keep_dates = self.keep_dates.get()
+        s.check_updates = self.check_updates.get()
+        s.save(self.settings_path)
+        self._refresh_copy_banner()
+
+    def options(self) -> Options:
+        return Options(keep_orientation=self.keep_orientation.get(), keep_workflow=self.keep_workflow.get(),
+                       keep_dates=self.keep_dates.get())
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
         r = self.root
         r.title(f"清除相片影片資訊 {__version__}")
-        r.geometry("600x520")
-        r.minsize(480, 460)
+        r.geometry("620x600")
+        r.minsize(500, 520)
         style = ttk.Style(r)
         style.configure(".", font=(FONT, 10))
         style.configure("Title.TLabel", font=(FONT, 14, "bold"))
         style.configure("Muted.TLabel", foreground="#555")
+        style.configure("Warn.TLabel", foreground=WARN, font=(FONT, 10, "bold"))
+        style.configure("Link.TLabel", foreground=ACCENT, font=(FONT, 10, "underline"))
         style.configure("Accent.TButton", font=(FONT, 10, "bold"))
 
         main = ttk.Frame(r, padding=16)
         main.pack(fill="both", expand=True)
+        self.update_label = ttk.Label(main, style="Link.TLabel", cursor="hand2")
+        self.update_label.bind("<Button-1>", lambda _: self._open_update())
         ttk.Label(main, text="清除相片與影片的 EXIF、GPS、AI 來源標記", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(main, text="會處理所有子資料夾，直接覆蓋原檔，畫質不變。",
-                  style="Muted.TLabel").pack(anchor="w", pady=(2, 12))
+        ttk.Label(main, text="會處理所有子資料夾，畫質不變。", style="Muted.TLabel").pack(anchor="w", pady=(2, 10))
+        self.top_anchor = ttk.Frame(main)  # update banner goes here
+        self.top_anchor.pack(fill="x")
 
-        self.drop = tk.Label(main, font=(FONT, 12), fg=ACCENT, bg="#eef4ff", relief="groove", bd=2, height=5)
+        self.drop = tk.Label(main, font=(FONT, 12), fg=ACCENT, bg="#eef4ff", relief="groove", bd=2, height=4)
         self.drop.pack(fill="x")
         self.dnd_enabled = False
         if TkinterDnD is not None:
@@ -68,28 +123,52 @@ class App:
                 pass
         self.drop.configure(text="把資料夾或檔案拖到這裡" if self.dnd_enabled else "按下方按鈕選擇資料夾或檔案")
 
+        self.copy_banner = ttk.Label(main, style="Warn.TLabel")
+        self.copy_anchor = ttk.Frame(main)
+        self.copy_anchor.pack(fill="x")
+
         btns = ttk.Frame(main)
-        btns.pack(fill="x", pady=10)
+        btns.pack(fill="x", pady=8)
         self.btn_folder = ttk.Button(btns, text="選擇資料夾…", style="Accent.TButton", command=self._pick_folder)
         self.btn_folder.pack(side="left")
         self.btn_files = ttk.Button(btns, text="選擇檔案…", command=self._pick_files)
         self.btn_files.pack(side="left", padx=8)
         self.btn_stop = ttk.Button(btns, text="停止", command=self.stop, state="disabled")
         self.btn_stop.pack(side="right")
+        self.btn_retry = ttk.Button(btns, text="重試失敗的檔案", command=self.retry_failed)
 
         opts = ttk.Frame(main)
         opts.pack(fill="x")
-        ttk.Checkbutton(opts, text="保留照片旋轉方向（建議）", variable=self.keep_orientation).pack(side="left")
-        ttk.Checkbutton(opts, text="只檢查，不修改", variable=self.dry_run).pack(side="left", padx=16)
+        ttk.Checkbutton(opts, text="只檢查，不修改", variable=self.dry_run).pack(side="left")
+        self.btn_adv = ttk.Button(opts, command=self._toggle_advanced, width=12)
+        self.btn_adv.pack(side="right")
+
+        self.adv = ttk.LabelFrame(main, text="進階選項", padding=(10, 6))
+        self.adv_anchor = ttk.Frame(main)
+        self.adv_anchor.pack(fill="x")
+        for text, var in (("保留照片旋轉方向（建議）", self.keep_orientation),
+                          ("保留 AI 工作流程（PNG 裡的 ComfyUI 等設定）", self.keep_workflow),
+                          ("另存到新資料夾（原資料夾名稱後加「_已清除」，原檔不動）", self.save_copy),
+                          ("保留檔案日期", self.keep_dates),
+                          ("自動檢查新版本（只讀取 GitHub 上的版本號）", self.check_updates)):
+            ttk.Checkbutton(self.adv, text=text, variable=var).pack(anchor="w", pady=1)
+        menu_row = ttk.Frame(self.adv)
+        menu_row.pack(fill="x", pady=(6, 0))
+        self.btn_menu = ttk.Button(menu_row, command=self._toggle_menu)
+        self.btn_menu.pack(side="left")
+        self.menu_status = ttk.Label(menu_row, style="Muted.TLabel")
+        self.menu_status.pack(side="left", padx=8)
+        self._refresh_menu_button()
+        self._show_advanced(self.settings.advanced_open)
 
         self.bar = ttk.Progressbar(main, mode="determinate", maximum=1)
-        self.bar.pack(fill="x", pady=(14, 4))
+        self.bar.pack(fill="x", pady=(12, 4))
         self.status = ttk.Label(main, text="等待選擇檔案")
         self.status.pack(anchor="w")
         self.detail = ttk.Label(main, text="", style="Muted.TLabel")
         self.detail.pack(anchor="w")
 
-        self.text = tk.Text(main, height=8, font=(FONT, 9), relief="flat", bg="#f6f6f6", wrap="word")
+        self.text = tk.Text(main, height=6, font=(FONT, 9), relief="flat", bg="#f6f6f6", wrap="word")
         self.text.pack(fill="both", expand=True, pady=(8, 8))
         self.text.configure(state="disabled")
 
@@ -98,6 +177,46 @@ class App:
         ffmpeg = "已找到 ffmpeg，可處理影片" if find_tool("ffmpeg") else "找不到 ffmpeg：只處理圖片，影片會略過"
         ttk.Label(foot, text=ffmpeg, style="Muted.TLabel").pack(side="left")
         ttk.Button(foot, text="開啟紀錄資料夾", command=lambda: os.startfile(log_dir())).pack(side="right")
+        self._refresh_copy_banner()
+
+    def _show_advanced(self, show: bool) -> None:
+        if show:
+            self.adv.pack(in_=self.adv_anchor, fill="x", pady=(6, 0))
+        else:
+            self.adv.pack_forget()
+        self.btn_adv.configure(text="進階選項 ▾" if show else "進階選項 ▸")
+        self.settings.advanced_open = show
+
+    def _toggle_advanced(self) -> None:
+        self._show_advanced(not self.settings.advanced_open)
+        self.settings.save(self.settings_path)
+
+    def _refresh_copy_banner(self) -> None:
+        if self.save_copy.get():
+            self.copy_banner.configure(text="目前：另存到新資料夾（名稱後加「_已清除」），原檔不會被修改")
+            self.copy_banner.pack(in_=self.copy_anchor, anchor="w", pady=(6, 0))
+        else:
+            self.copy_banner.pack_forget()
+
+    def _refresh_menu_button(self) -> None:
+        try:
+            installed = integration.menu_installed()
+        except Exception:
+            self.btn_menu.configure(text="右鍵選單（不支援）", state="disabled")
+            return
+        self.btn_menu.configure(text="移除右鍵選單" if installed else "加入右鍵選單")
+        self.menu_status.configure(text="檔案總管按右鍵可用「清除相片資訊」" if installed else "")
+
+    def _toggle_menu(self) -> None:
+        try:
+            if integration.menu_installed():
+                integration.uninstall_menu()
+            else:
+                integration.install_menu()
+        except OSError as e:
+            self.menu_status.configure(text=f"失敗：{e}")
+            return
+        self._refresh_menu_button()
 
     def _write(self, line: str) -> None:
         self.text.configure(state="normal")
@@ -106,11 +225,34 @@ class App:
         self.text.configure(state="disabled")
 
     def _set_busy(self, busy: bool) -> None:
-        for b in (self.btn_folder, self.btn_files):
+        for b in (self.btn_folder, self.btn_files, self.btn_retry):
             b.configure(state="disabled" if busy else "normal")
         self.btn_stop.configure(state="normal" if busy else "disabled")
 
+    # ------------------------------------------------------------ updates
+    def _maybe_check_updates(self) -> None:
+        if not self.check_updates.get():
+            return
+        if time.time() - self.settings.last_update_check < updates.CHECK_EVERY:
+            return
+        self.settings.last_update_check = time.time()
+        self.settings.save(self.settings_path)
+
+        def work() -> None:
+            found = updates.newer_release(__version__, fetch=self.fetch_update)
+            if found:
+                self.q.put(("update", *found))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _open_update(self) -> None:
+        if self.update_info:
+            webbrowser.open(self.update_info[1])
+
     # ------------------------------------------------------------ input
+    def add_paths(self, paths: list[str]) -> None:
+        """Paths from right-click launches (any thread). Collected briefly, then started together."""
+        self.q.put(("paths", paths))
+
     def _on_drop(self, event) -> None:
         self.start([Path(p) for p in self.root.tk.splitlist(event.data)])
 
@@ -127,22 +269,37 @@ class App:
             self.start([Path(f) for f in fs])
 
     # ------------------------------------------------------------ work
+    def busy(self) -> bool:
+        return self.state in ("scanning", "running")
+
     def start(self, paths: list[Path]) -> None:
-        if self.state in ("scanning", "running"):
+        if self.busy():
             return
+        self.roots = [Path(p) for p in paths]
         self.state = "scanning"
         self.stop_event.clear()
         self._set_busy(True)
+        self.btn_retry.pack_forget()
         self.status.configure(text="正在搜尋檔案…")
         self.detail.configure(text="")
         self.bar.configure(value=0)
-        threading.Thread(target=lambda: self.q.put(("scanned", paths, *scan(paths))), daemon=True).start()
+        skip = [copy_root(p) for p in self.roots if p.is_dir()] if self.save_copy.get() else []
+        roots = list(self.roots)
+        threading.Thread(target=lambda: self.q.put(("scanned", *scan(roots, skip=skip))), daemon=True).start()
+
+    def retry_failed(self) -> None:
+        if self.busy() or not self.failed:
+            return
+        self.state = "scanning"
+        self._set_busy(True)
+        self.btn_retry.pack_forget()
+        self._after_scan(list(self.failed), [], retry=True)
 
     def stop(self) -> None:
         self.stop_event.set()
         self.status.configure(text="正在停止…")
 
-    def _after_scan(self, paths, targets, unsupported) -> None:
+    def _after_scan(self, targets, unsupported, retry: bool = False) -> None:
         has_ffmpeg = find_tool("ffmpeg") is not None
         skipped_videos = 0 if has_ffmpeg else sum(p.suffix.lower() in VIDEO_EXT for p in targets)
         if not has_ffmpeg:
@@ -151,11 +308,17 @@ class App:
         if not targets:
             self._finish_idle("沒有找到可處理的相片或影片。")
             return
-        msg = f"找到圖片 {len(targets) - n_vid} 張、影片 {n_vid} 部。"
+        what = "重試" if retry else "找到"
+        msg = f"{what}圖片 {len(targets) - n_vid} 張、影片 {n_vid} 部。"
         if skipped_videos:
             msg += f"\n（找不到 ffmpeg，{skipped_videos} 部影片會略過）"
+        save_copy = self.save_copy.get() and not self.dry_run.get()
         if self.dry_run.get():
             msg += "\n\n只檢查，不會修改任何檔案。要開始嗎？"
+        elif save_copy:
+            dests = sorted({str(copy_root(r) if r.is_dir() else copy_root(r.parent)) for r in self.roots})
+            msg += "\n\n清好的檔案會存到：\n" + "\n".join(dests[:3]) + ("\n…" if len(dests) > 3 else "")
+            msg += "\n原檔不會被修改。要開始嗎？"
         else:
             msg += "\n\n會直接覆蓋原檔（畫質不變），無法復原。要開始嗎？"
         if not self.confirm("確認", msg):
@@ -163,27 +326,29 @@ class App:
             return
         self.state = "running"
         self.counts = {CLEANED: 0, CLEAN: 0, "failed": 0}
+        self.failed = []
         self.bar.configure(maximum=len(targets), value=0)
         self.log_path = log_dir() / time.strftime("strip_%Y%m%d_%H%M%S.log")
-        args = (paths, targets, unsupported, self.keep_orientation.get(), self.dry_run.get())
+        args = (list(self.roots), targets, unsupported, self.options(), self.dry_run.get(), save_copy)
         threading.Thread(target=self._worker, args=args, daemon=True).start()
 
-    def _worker(self, paths, targets, unsupported, keep_orientation, dry_run) -> None:
+    def _worker(self, roots, targets, unsupported, options, dry_run, save_copy) -> None:
         t0 = time.time()
         with open(self.log_path, "w", encoding="utf-8") as log:
-            log.write(f"paths={[str(p) for p in paths]} dry_run={dry_run}\n")
+            log.write(f"paths={[str(p) for p in roots]} dry_run={dry_run} save_copy={save_copy} {options}\n")
             for i, p in enumerate(targets, 1):
                 if self.stop_event.is_set():
                     log.write("stopped by user\n")
                     break
                 t1 = time.time()
                 err = None
+                dest = copy_destination(p, roots) if save_copy else None
                 try:
-                    status = strip_file(p, keep_orientation, dry_run)
+                    status = strip_file(p, options, dry_run, dest=dest)
                 except StripError as e:
                     status, err = "failed", str(e)
                     log.write(f"FAILED {p}: {e}\n")
-                log.write(f"{status} {p}\n")
+                log.write(f"{status} {p}" + (f" -> {dest}" if dest else "") + "\n")
                 eta = (time.time() - t0) / i * (len(targets) - i)
                 self.q.put(("progress", i, len(targets), p, status, err, time.time() - t1, eta))
             for p in unsupported:
@@ -193,40 +358,60 @@ class App:
     def _poll(self) -> None:
         try:
             while True:
-                msg = self.q.get_nowait()
-                kind = msg[0]
-                if kind == "scanned":
-                    self._after_scan(*msg[1:])
-                elif kind == "progress":
-                    _, i, n, p, status, err, took, eta = msg
-                    self.counts[status] += 1
-                    self.bar.configure(value=i)
-                    self.status.configure(text=f"{i}/{n}（{100 * i / n:.0f}%）  剩餘約 {fmt_time(eta)}")
-                    self.detail.configure(text=f"{p.name}  本檔 {took:.1f} 秒")
-                    if err:
-                        self._write(f"失敗：{p}（{err}）")
-                elif kind == "done":
-                    _, elapsed, n_unsup, dry_run = msg
-                    c = self.counts
-                    verb = "需要清除" if dry_run else "已清除"
-                    stopped = "（已中途停止）" if self.stop_event.is_set() else ""
-                    summary = (f"完成{stopped}，耗時 {fmt_time(elapsed)}：{verb} {c[CLEANED]} 個、"
-                               f"本來就乾淨 {c[CLEAN]} 個、失敗 {c['failed']} 個。")
-                    self._write(summary)
-                    if n_unsup:
-                        self._write(f"另有 {n_unsup} 個不支援的格式（HEIC/TIFF/GIF 等）沒有處理。")
-                    self.status.configure(text=summary)
-                    self.detail.configure(text="")
-                    self.state = "done"
-                    self._set_busy(False)
+                self._handle(self.q.get_nowait())
         except queue.Empty:
             pass
+        if self.pending and not self.busy() and time.time() - self.pending_since >= BATCH_WAIT:
+            paths, self.pending = self.pending, []
+            self.root.deiconify()
+            self.root.lift()
+            self.start(paths)
         self.root.after(50, self._poll)
+
+    def _handle(self, msg) -> None:
+        kind = msg[0]
+        if kind == "paths":
+            self.pending += [Path(p) for p in msg[1]]
+            self.pending_since = time.time()
+        elif kind == "scanned":
+            self._after_scan(msg[1], msg[2])
+        elif kind == "update":
+            self.update_info = (msg[1], msg[2])
+            self.update_label.configure(text=f"有新版 v{msg[1]}，按這裡下載")
+            self.update_label.pack(in_=self.top_anchor, anchor="w", pady=(0, 8))
+        elif kind == "progress":
+            _, i, n, p, status, err, took, eta = msg
+            self.counts[status] += 1
+            self.bar.configure(value=i)
+            self.status.configure(text=f"{i}/{n}（{100 * i / n:.0f}%）  剩餘約 {fmt_time(eta)}")
+            self.detail.configure(text=f"{p.name}  本檔 {took:.1f} 秒")
+            if err:
+                self.failed.append(p)
+                self._write(f"失敗：{p}（{err}）")
+        elif kind == "done":
+            _, elapsed, n_unsup, dry_run = msg
+            c = self.counts
+            verb = "需要清除" if dry_run else "已清除"
+            stopped = "（已中途停止）" if self.stop_event.is_set() else ""
+            summary = (f"完成{stopped}，耗時 {fmt_time(elapsed)}：{verb} {c[CLEANED]} 個、"
+                       f"本來就乾淨 {c[CLEAN]} 個、失敗 {c['failed']} 個。")
+            self._write(summary)
+            if n_unsup:
+                self._write(f"另有 {n_unsup} 個不支援的格式（HEIC/TIFF/GIF 等）沒有處理。")
+            self.status.configure(text=summary)
+            self.detail.configure(text="")
+            self.state = "done"
+            self._set_busy(False)
+            if self.failed:
+                self.btn_retry.configure(text=f"重試失敗的檔案（{len(self.failed)}）")
+                self.btn_retry.pack(side="right", padx=8)
 
     def _finish_idle(self, text: str) -> None:
         self.status.configure(text=text)
         self.state = "idle"
         self._set_busy(False)
+        if self.failed:
+            self.btn_retry.pack(side="right", padx=8)
 
 
 def make_root() -> tk.Tk:
@@ -238,7 +423,37 @@ def make_root() -> tk.Tk:
     return tk.Tk()
 
 
+def claim_instance(paths: list[str], on_paths: Callable[[list[str]], None]):
+    """Hand paths to an open window if there is one; otherwise become the window that receives them.
+
+    Returns (server or None, forwarded: bool).
+    """
+    for _ in range(15):
+        if paths and integration.forward_to_running(paths):
+            return None, True
+        try:
+            return integration.InstanceServer(on_paths), False
+        except OSError:
+            if not paths:  # plain launch while another window is open: just open another window
+                return None, False
+            time.sleep(0.2)
+    return None, False
+
+
 def main(paths: list[str] | None = None) -> int:
+    paths = list(paths or [])
+    holder: dict[str, App] = {}
+    early: list[list[str]] = []
+
+    def on_paths(ps: list[str]) -> None:
+        if "app" in holder:
+            holder["app"].add_paths(ps)
+        else:
+            early.append(ps)
+
+    server, forwarded = claim_instance(paths, on_paths)
+    if forwarded:
+        return 0
     try:  # sharp text on high-DPI screens
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -246,7 +461,14 @@ def main(paths: list[str] | None = None) -> int:
         pass
     root = make_root()
     app = App(root)
-    if paths:  # files dropped on the .exe icon
-        root.after(200, lambda: app.start([Path(p) for p in paths]))
-    root.mainloop()
+    holder["app"] = app
+    if paths:
+        app.add_paths(paths)
+    for ps in early:
+        app.add_paths(ps)
+    try:
+        root.mainloop()
+    finally:
+        if server:
+            server.close()
     return 0

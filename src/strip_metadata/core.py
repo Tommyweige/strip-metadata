@@ -18,6 +18,7 @@ import struct
 import subprocess
 import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 JPEG_EXT = {".jpg", ".jpeg", ".jpe", ".jfif"}
@@ -32,6 +33,9 @@ TMP_MARK = ".__stripping__"
 # caBX = C2PA "Content Credentials" (signed provenance, e.g. from AI generators)
 PNG_DROP = {b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"tIME", b"caBX"}
 WEBP_DROP = {b"EXIF", b"XMP ", b"C2PA"}
+# PNG text keywords that hold AI generation workflows (ComfyUI, AUTOMATIC1111 / Forge)
+WORKFLOW_KEYWORDS = {b"prompt", b"workflow", b"parameters"}
+COPY_SUFFIX = "_已清除"
 # Tags ffprobe always reports that are not personal metadata.
 HARMLESS_VIDEO_TAGS = {"major_brand", "minor_version", "compatible_brands",
                        "handler_name", "vendor_id", "language", "encoder", "duration"}
@@ -156,7 +160,14 @@ def strip_jpeg(data: bytes, keep_orientation: bool = True) -> bytes | None:
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 
-def strip_png(data: bytes) -> bytes | None:
+def is_workflow_chunk(ctype: bytes, body: bytes) -> bool:
+    """A PNG text chunk holding an AI workflow (ComfyUI prompt/workflow, A1111 parameters)."""
+    if ctype not in (b"tEXt", b"zTXt", b"iTXt"):
+        return False
+    return body.split(b"\0", 1)[0] in WORKFLOW_KEYWORDS
+
+
+def strip_png(data: bytes, keep_workflow: bool = False) -> bytes | None:
     if not data.startswith(PNG_SIG):
         raise StripError("不是有效的 PNG")
     out, pos, removed = [PNG_SIG], 8, False
@@ -167,7 +178,9 @@ def strip_png(data: bytes) -> bytes | None:
         ctype = data[pos + 4:pos + 8]
         chunk = data[pos:pos + 12 + length]
         pos += 12 + length
-        if ctype in PNG_DROP:
+        if keep_workflow and is_workflow_chunk(ctype, chunk[8:-4]):
+            out.append(chunk)
+        elif ctype in PNG_DROP:
             removed = True
         else:
             out.append(chunk)
@@ -233,40 +246,83 @@ def strip_video(path: Path, tmp: Path) -> None:
 
 
 # ---------------------------------------------------------------- driver
-def _replace_keep_times(src: Path, tmp: Path) -> None:
-    st = src.stat()
-    os.replace(tmp, src)
-    os.utime(src, (st.st_atime, st.st_mtime))
+@dataclass(frozen=True)
+class Options:
+    keep_orientation: bool = True
+    keep_workflow: bool = False
+    keep_dates: bool = True
 
 
-def strip_file(path: Path, keep_orientation: bool = True, dry_run: bool = False) -> str:
-    """Clean one file in place. Returns CLEANED or CLEAN; raises StripError on failure."""
+def copy_root(folder: Path) -> Path:
+    """Where a copy of `folder` goes when saving to a new folder: a sibling named <name>_已清除."""
+    folder = Path(folder)
+    if not folder.name:  # a drive root such as D:\
+        return folder / "已清除"
+    return folder.with_name(folder.name + COPY_SUFFIX)
+
+
+def copy_destination(path: Path, roots: Iterable[Path]) -> Path:
+    """Destination of `path` in save-copy mode, keeping the sub-folder layout under its root."""
     path = Path(path)
+    for root in roots:
+        root = Path(root)
+        if root != path:  # a picked file has no layout to keep
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                continue
+            return copy_root(root) / rel
+    return copy_root(path.parent) / path.name
+
+
+def _finish(tmp: Path, dest: Path, src_stat: os.stat_result, keep_dates: bool) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(tmp, dest)
+    if keep_dates:
+        os.utime(dest, (src_stat.st_atime, src_stat.st_mtime))
+
+
+def strip_file(path: Path, options: Options | None = None, dry_run: bool = False,
+               dest: Path | None = None) -> str:
+    """Clean one file. Overwrites it, or writes the result to `dest` (save-copy mode).
+
+    Returns CLEANED or CLEAN; raises StripError on failure, leaving the original untouched.
+    In save-copy mode a CLEAN file is still copied to `dest`, so the new folder is complete.
+    """
+    opts = options or Options()
+    path = Path(path)
+    target = Path(dest) if dest else path
     ext = path.suffix.lower()
-    tmp = path.with_name(path.stem + TMP_MARK + path.suffix)
+    tmp = target.with_name(target.stem + TMP_MARK + target.suffix)
     try:
+        st = path.stat()
         if ext in VIDEO_EXT:
-            if not video_has_metadata(path):
-                return CLEAN
+            dirty = video_has_metadata(path)
             if not dry_run:
-                strip_video(path, tmp)
-                _replace_keep_times(path, tmp)
-            return CLEANED
+                if dirty:
+                    tmp.parent.mkdir(parents=True, exist_ok=True)
+                    strip_video(path, tmp)
+                    _finish(tmp, target, st, opts.keep_dates)
+                elif dest:
+                    _copy(path, target, opts.keep_dates)
+            return CLEANED if dirty else CLEAN
         data = path.read_bytes()
         if ext in JPEG_EXT:
-            new = strip_jpeg(data, keep_orientation)
+            new = strip_jpeg(data, opts.keep_orientation)
         elif ext in PNG_EXT:
-            new = strip_png(data)
+            new = strip_png(data, opts.keep_workflow)
         elif ext in WEBP_EXT:
             new = strip_webp(data)
         else:
             raise StripError("不支援的格式")
-        if new is None:
-            return CLEAN
         if not dry_run:
-            tmp.write_bytes(new)
-            _replace_keep_times(path, tmp)
-        return CLEANED
+            if new is not None:
+                tmp.parent.mkdir(parents=True, exist_ok=True)
+                tmp.write_bytes(new)
+                _finish(tmp, target, st, opts.keep_dates)
+            elif dest:
+                _copy(path, target, opts.keep_dates)
+        return CLEAN if new is None else CLEANED
     except PermissionError as e:
         raise StripError("檔案正被其他程式開啟（例如瀏覽器或播放器正在播放、預覽），或是唯讀檔；"
                          "關掉那個程式後再試一次") from e
@@ -276,10 +332,19 @@ def strip_file(path: Path, keep_orientation: bool = True, dry_run: bool = False)
         tmp.unlink(missing_ok=True)
 
 
-def scan(paths: Iterable[Path]) -> tuple[list[Path], list[Path]]:
-    """Expand files and folders (recursively) into (supported, unsupported) lists."""
+def _copy(src: Path, dest: Path, keep_dates: bool) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    (shutil.copy2 if keep_dates else shutil.copyfile)(src, dest)
+
+
+def scan(paths: Iterable[Path], skip: Iterable[Path] = ()) -> tuple[list[Path], list[Path]]:
+    """Expand files and folders (recursively) into (supported, unsupported) lists.
+
+    Folders in `skip` (e.g. the save-copy output folders) are not entered.
+    """
     targets: list[Path] = []
     unsupported: list[Path] = []
+    skip_set = {Path(p).resolve() for p in skip}
 
     def add(p: Path) -> None:
         if TMP_MARK in p.name:
@@ -296,7 +361,8 @@ def scan(paths: Iterable[Path]) -> tuple[list[Path], list[Path]]:
             add(root)
             continue
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS
+                                 and (Path(dirpath) / d).resolve() not in skip_set)
             for f in sorted(filenames):
                 add(Path(dirpath) / f)
     seen: set[Path] = set()

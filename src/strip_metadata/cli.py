@@ -8,12 +8,23 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .core import CLEAN, CLEANED, VIDEO_EXT, StripError, find_tool, scan, strip_file
+from .core import (
+    CLEAN,
+    CLEANED,
+    VIDEO_EXT,
+    Options,
+    StripError,
+    copy_destination,
+    copy_root,
+    find_tool,
+    scan,
+    strip_file,
+)
+from .settings import app_dir
 
 
 def log_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    d = Path(base) / "StripMetadata" / "logs"
+    d = app_dir() / "logs"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -31,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="只檢查，不改檔")
     ap.add_argument("--yes", action="store_true", help="不詢問，直接開始")
     ap.add_argument("--drop-orientation", action="store_true", help="連 JPEG 旋轉方向也移除")
+    ap.add_argument("--keep-workflow", action="store_true", help="保留 PNG 裡的 AI 工作流程（ComfyUI 等）")
+    ap.add_argument("--copy", action="store_true", help="另存到新資料夾（名稱後加 _已清除），原檔不動")
+    ap.add_argument("--new-dates", action="store_true", help="不保留檔案日期")
     ap.add_argument("--log", type=Path, help="紀錄檔位置")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
@@ -39,7 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print("找不到：" + "、".join(map(str, missing)))
         return 2
-    targets, unsupported = scan(args.paths)
+    skip = [copy_root(p) for p in args.paths if p.is_dir()] if args.copy else []
+    targets, unsupported = scan(args.paths, skip=skip)
     n_vid = sum(p.suffix.lower() in VIDEO_EXT for p in targets)
     print(f"找到圖片 {len(targets) - n_vid} 張、影片 {n_vid} 部" + ("（只檢查，不改檔）" if args.dry_run else ""))
     if n_vid and not find_tool("ffmpeg"):
@@ -50,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.yes and not args.dry_run:
         try:
-            ans = input("會直接覆蓋原檔（畫質不變）。按 Enter 開始，輸入 n 取消：")
+            what = "清好的檔案會另存到「_已清除」資料夾" if args.copy else "會直接覆蓋原檔（畫質不變）"
+            ans = input(f"{what}。按 Enter 開始，輸入 n 取消：")
         except EOFError:
             ans = "n"
         if ans.lstrip(chr(0xFEFF)).strip().lower() in ("n", "no", "否"):
@@ -59,13 +75,17 @@ def main(argv: list[str] | None = None) -> int:
 
     log_path = args.log or log_dir() / time.strftime("strip_%Y%m%d_%H%M%S.log")
     counts = {CLEANED: 0, CLEAN: 0, "failed": 0}
+    opts = Options(keep_orientation=not args.drop_orientation, keep_workflow=args.keep_workflow,
+                   keep_dates=not args.new_dates)
+    save_copy = args.copy and not args.dry_run
     t0 = time.time()
     with open(log_path, "w", encoding="utf-8") as log:
         log.write(f"paths={[str(p) for p in args.paths]} dry_run={args.dry_run}\n")
         for i, p in enumerate(targets, 1):
             t1 = time.time()
             try:
-                status = strip_file(p, not args.drop_orientation, args.dry_run)
+                dest = copy_destination(p, args.paths) if save_copy else None
+                status = strip_file(p, opts, args.dry_run, dest=dest)
             except StripError as e:
                 status = "failed"
                 log.write(f"FAILED {p}: {e}\n")
