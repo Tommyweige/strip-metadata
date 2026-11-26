@@ -1,6 +1,5 @@
 import subprocess
 import sys
-import time
 
 import pytest
 from conftest import make_jpeg
