@@ -32,9 +32,13 @@ UNSUPPORTED_EXT = {".heic", ".heif", ".tif", ".tiff", ".gif", ".avif", ".dng", "
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv"}
 TMP_MARK = ".__stripping__"
 
-# caBX = C2PA "Content Credentials" (signed provenance, e.g. from AI generators)
-PNG_DROP = {b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"tIME", b"caBX"}
-WEBP_DROP = {b"EXIF", b"XMP ", b"C2PA"}
+# Only chunks needed to show the picture are kept; every other optional chunk is removed:
+# text (incl. XMP and ImageMagick IPTC/EXIF profiles), eXIf, tIME, caBX (C2PA) and private ones.
+# Critical chunks (upper-case first letter, e.g. IHDR/PLTE/IDAT/IEND) are always kept.
+PNG_KEEP = {b"tRNS", b"cHRM", b"gAMA", b"iCCP", b"sBIT", b"sRGB", b"cICP", b"mDCV", b"cLLI",
+            b"bKGD", b"hIST", b"pHYs", b"sPLT", b"acTL", b"fcTL", b"fdAT"}
+# WebP: image, alpha, animation and colour profile; EXIF, XMP, C2PA and unknown chunks go.
+WEBP_KEEP = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ANIM", b"ANMF", b"ICCP"}
 # PNG text keywords that hold AI generation workflows (ComfyUI, AUTOMATIC1111 / Forge)
 WORKFLOW_KEYWORDS = {b"prompt", b"workflow", b"parameters"}
 COPY_SUFFIX = "_已清除"
@@ -183,7 +187,7 @@ def strip_png(data: bytes, keep_workflow: bool = False) -> bytes | None:
         pos += 12 + length
         if keep_workflow and is_workflow_chunk(ctype, chunk[8:-4]):
             out.append(chunk)
-        elif ctype in PNG_DROP:
+        elif ctype[0] & 0x20 and ctype not in PNG_KEEP:  # optional chunk not needed to display
             removed = True
         else:
             out.append(chunk)
@@ -202,7 +206,7 @@ def strip_webp(data: bytes) -> bytes | None:
         size = struct.unpack("<I", data[pos + 4:pos + 8])[0]
         full = data[pos:pos + 8 + size + (size & 1)]
         pos += 8 + size + (size & 1)
-        if fourcc in WEBP_DROP:
+        if fourcc not in WEBP_KEEP:
             removed = True
             continue
         chunks.append(bytearray(full))
@@ -216,42 +220,61 @@ def strip_webp(data: bytes) -> bytes | None:
 
 
 # ---------------------------------------------------------------- video
-# C2PA "Content Credentials" in MP4/MOV live in a top-level `uuid` box with this extended type.
+# MP4/MOV metadata that ffprobe does not report as tags:
+# C2PA "Content Credentials" and XMP, in top-level `uuid` boxes or (XMP) a `udta/XMP_` box.
 C2PA_UUID = bytes.fromhex("d8fec3d61b0e483c92975828877ec481")
+XMP_UUID = bytes.fromhex("be7acfcb97a942e89c71999491e3afac")
 BMFF_EXT = {".mp4", ".mov", ".m4v", ".3gp"}
+_BMFF_CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"udta", b"meta"}
 
 
-def bmff_has_c2pa(path: Path) -> bool:
-    """True if an MP4/MOV file carries a C2PA manifest (ffprobe does not report it as a tag)."""
+def bmff_metadata(path: Path) -> set[str]:
+    """Kinds of hidden metadata ("C2PA", "XMP") found in an MP4/MOV file; empty when none."""
+    found: set[str] = set()
     try:
         with open(path, "rb") as f:
-            size_left = os.fstat(f.fileno()).st_size
-            pos = 0
-            for _ in range(100_000):
-                if size_left - pos < 8:
-                    return False
-                f.seek(pos)
-                size, kind = struct.unpack(">I4s", f.read(8))
-                header = 8
-                if size == 1:
-                    size = struct.unpack(">Q", f.read(8))[0]
-                    header = 16
-                elif size == 0:
-                    size = size_left - pos
-                if size < header:
-                    return False
-                if kind in (b"c2pa", b"jumb"):
-                    return True
-                if kind == b"uuid" and f.read(16) == C2PA_UUID:
-                    return True
-                pos += size
+            _scan_boxes(f, 0, os.fstat(f.fileno()).st_size, found, depth=0)
     except (OSError, struct.error):
-        return False
-    return False
+        pass
+    return found
+
+
+def _scan_boxes(f, pos: int, end: int, found: set[str], depth: int) -> None:
+    for _ in range(100_000):
+        if end - pos < 8:
+            return
+        f.seek(pos)
+        size, kind = struct.unpack(">I4s", f.read(8))
+        header = 8
+        if size == 1:
+            size = struct.unpack(">Q", f.read(8))[0]
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header or pos + size > end:
+            return
+        if kind in (b"c2pa", b"jumb"):
+            found.add("C2PA")
+        elif kind == b"XMP_":
+            found.add("XMP")
+        elif kind == b"uuid":
+            ext = f.read(16)
+            if ext == C2PA_UUID:
+                found.add("C2PA")
+            elif ext == XMP_UUID:
+                found.add("XMP")
+        elif kind in _BMFF_CONTAINERS and depth < 6:
+            body = pos + header
+            if kind == b"meta":  # ISO `meta` is a full box (4 bytes version/flags); QuickTime's is not
+                f.seek(body + 4)
+                if f.read(4) in (b"hdlr", b"ilst", b"keys"):
+                    body += 4
+            _scan_boxes(f, body, pos + size, found, depth + 1)
+        pos += size
 
 
 def video_has_metadata(path: Path) -> bool:
-    if Path(path).suffix.lower() in BMFF_EXT and bmff_has_c2pa(path):
+    if Path(path).suffix.lower() in BMFF_EXT and bmff_metadata(path):
         return True
     ffprobe = find_tool("ffprobe")
     if not ffprobe:
@@ -356,8 +379,8 @@ def strip_video(path: Path, tmp: Path, crop_to: tuple[int, int, int, int] | None
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
         last = (r.stderr.strip().splitlines() or ["未知錯誤"])[-1]
         raise StripError("ffmpeg 失敗：" + last)
-    if tmp.suffix.lower() in BMFF_EXT and bmff_has_c2pa(tmp):
-        raise StripError("影片裡的 C2PA 內容憑證沒有被移除，原檔未修改")
+    if tmp.suffix.lower() in BMFF_EXT and (left := bmff_metadata(tmp)):
+        raise StripError(f"影片裡的 {'、'.join(sorted(left))} 沒有被移除，原檔未修改")
 
 
 # ---------------------------------------------------------------- driver

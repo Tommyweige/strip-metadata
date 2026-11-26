@@ -10,7 +10,7 @@ import os
 import threading
 from pathlib import Path
 
-RULES_VERSION = 2  # bump whenever what counts as "clean" changes, to invalidate old entries
+RULES_VERSION = 3  # bump whenever what counts as "clean" changes, to invalidate old entries
 MAX_ENTRIES = 200_000
 
 
