@@ -50,7 +50,7 @@ Windows 第一次開啟可能出現「Windows 已保護您的電腦」，按「�
 | 相片 | JPEG | EXIF、XMP、IPTC、C2PA（APP11）、註解 |
 | 相片 | PNG | tEXt / zTXt / iTXt 文字、eXIf、時間、C2PA（caBX） |
 | 相片 | WebP | EXIF、XMP、C2PA |
-| 影片 | MP4 / MOV / M4V / MKV / WebM / AVI / 3GP | 標題、地點、建立時間等標籤、章節、GPS 等資料串流 |
+| 影片 | MP4 / MOV / M4V / MKV / WebM / AVI / 3GP | 標題、地點、建立時間等標籤、章節、GPS 等資料串流；MP4 / MOV / M4V / 3GP 另外移除 C2PA 內容憑證（uuid 區塊） |
 
 HEIC、TIFF、GIF、RAW 不處理，完成時會列出數量。
 
