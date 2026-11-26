@@ -21,6 +21,7 @@ class Settings:
     save_copy: bool = False
     keep_dates: bool = True
     check_updates: bool = True
+    remember_clean: bool = True
     advanced_open: bool = False
     last_update_check: float = 0.0
 

@@ -11,21 +11,20 @@ from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import __version__, integration, updates
+from . import __version__, batch, integration, updates
+from .cache import CleanCache
 from .cli import fmt_time, log_dir
 from .core import (
     CLEAN,
     CLEANED,
     VIDEO_EXT,
     Options,
-    StripError,
     copy_destination,
     copy_root,
     find_tool,
     scan,
-    strip_file,
 )
-from .settings import Settings
+from .settings import Settings, app_dir
 
 try:  # drag & drop onto the window; the app still works without it
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -65,8 +64,12 @@ class App:
         self.save_copy = tk.BooleanVar(value=s.save_copy)
         self.keep_dates = tk.BooleanVar(value=s.keep_dates)
         self.check_updates = tk.BooleanVar(value=s.check_updates)
+        self.remember_clean = tk.BooleanVar(value=s.remember_clean)
+        self.cache_path = (settings_path.parent if settings_path else app_dir()) / "clean_cache.json"
+        self.cache: CleanCache | None = None
         self.dry_run = tk.BooleanVar(value=False)
-        for name in ("keep_orientation", "keep_workflow", "save_copy", "keep_dates", "check_updates"):
+        for name in ("keep_orientation", "keep_workflow", "save_copy", "keep_dates", "check_updates",
+                     "remember_clean"):
             getattr(self, name).trace_add("write", lambda *_: self._save_settings())
 
         self._build()
@@ -81,6 +84,7 @@ class App:
         s.save_copy = self.save_copy.get()
         s.keep_dates = self.keep_dates.get()
         s.check_updates = self.check_updates.get()
+        s.remember_clean = self.remember_clean.get()
         s.save(self.settings_path)
         self._refresh_copy_banner()
 
@@ -150,6 +154,7 @@ class App:
                           ("保留 AI 工作流程（PNG 裡的 ComfyUI 等設定）", self.keep_workflow),
                           ("另存到新資料夾（原資料夾名稱後加「_已清除」，原檔不動）", self.save_copy),
                           ("保留檔案日期", self.keep_dates),
+                          ("略過上次已清理、之後沒改過的檔案（加快速度）", self.remember_clean),
                           ("自動檢查新版本（只讀取 GitHub 上的版本號）", self.check_updates)):
             ttk.Checkbutton(self.adv, text=text, variable=var).pack(anchor="w", pady=1)
         menu_row = ttk.Frame(self.adv)
@@ -329,28 +334,24 @@ class App:
         self.failed = []
         self.bar.configure(maximum=len(targets), value=0)
         self.log_path = log_dir() / time.strftime("strip_%Y%m%d_%H%M%S.log")
+        self.cache = CleanCache(self.cache_path) if self.remember_clean.get() and not retry else None
         args = (list(self.roots), targets, unsupported, self.options(), self.dry_run.get(), save_copy)
         threading.Thread(target=self._worker, args=args, daemon=True).start()
 
     def _worker(self, roots, targets, unsupported, options, dry_run, save_copy) -> None:
         t0 = time.time()
+        dest_for = (lambda p: copy_destination(p, roots)) if save_copy else None
         with open(self.log_path, "w", encoding="utf-8") as log:
             log.write(f"paths={[str(p) for p in roots]} dry_run={dry_run} save_copy={save_copy} {options}\n")
-            for i, p in enumerate(targets, 1):
-                if self.stop_event.is_set():
-                    log.write("stopped by user\n")
-                    break
-                t1 = time.time()
-                err = None
-                dest = copy_destination(p, roots) if save_copy else None
-                try:
-                    status = strip_file(p, options, dry_run, dest=dest)
-                except StripError as e:
-                    status, err = "failed", str(e)
-                    log.write(f"FAILED {p}: {e}\n")
-                log.write(f"{status} {p}" + (f" -> {dest}" if dest else "") + "\n")
+            results = batch.run(targets, options, dry_run, dest_for, self.cache, self.stop_event)
+            for i, r in enumerate(results, 1):
+                if r.error:
+                    log.write(f"FAILED {r.path}: {r.error}\n")
+                log.write(f"{r.status} {r.path}" + (f" -> {r.dest}" if r.dest else "") + "\n")
                 eta = (time.time() - t0) / i * (len(targets) - i)
-                self.q.put(("progress", i, len(targets), p, status, err, time.time() - t1, eta))
+                self.q.put(("progress", i, len(targets), r.path, r.status, r.error, r.took, eta))
+            if self.stop_event.is_set():
+                log.write("stopped by user\n")
             for p in unsupported:
                 log.write(f"unsupported {p}\n")
         self.q.put(("done", time.time() - t0, len(unsupported), dry_run))
@@ -396,6 +397,8 @@ class App:
             summary = (f"完成{stopped}，耗時 {fmt_time(elapsed)}：{verb} {c[CLEANED]} 個、"
                        f"本來就乾淨 {c[CLEAN]} 個、失敗 {c['failed']} 個。")
             self._write(summary)
+            if self.cache and self.cache.hits:
+                self._write(f"其中 {self.cache.hits} 個上次已確認乾淨、之後沒改過，直接略過。")
             if n_unsup:
                 self._write(f"另有 {n_unsup} 個不支援的格式（HEIC/TIFF/GIF 等）沒有處理。")
             self.status.configure(text=summary)

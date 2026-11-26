@@ -85,3 +85,9 @@ def media_dir(tmp_path: Path) -> Path:
     if HAS_FFMPEG:
         make_mp4(tmp_path / "a" / "b" / "clip.mp4")
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def isolated_app_dir(tmp_path_factory, monkeypatch):
+    """Keep settings, logs and the clean-file cache of test runs out of the real user folder."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata")))

@@ -7,18 +7,17 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__
+from . import __version__, batch
+from .cache import CleanCache
 from .core import (
     CLEAN,
     CLEANED,
     VIDEO_EXT,
     Options,
-    StripError,
     copy_destination,
     copy_root,
     find_tool,
     scan,
-    strip_file,
 )
 from .settings import app_dir
 
@@ -45,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep-workflow", action="store_true", help="保留 PNG 裡的 AI 工作流程（ComfyUI 等）")
     ap.add_argument("--copy", action="store_true", help="另存到新資料夾（名稱後加 _已清除），原檔不動")
     ap.add_argument("--new-dates", action="store_true", help="不保留檔案日期")
+    ap.add_argument("--recheck", action="store_true", help="全部重新檢查（不略過上次已確認乾淨的檔案）")
     ap.add_argument("--log", type=Path, help="紀錄檔位置")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
@@ -78,25 +78,23 @@ def main(argv: list[str] | None = None) -> int:
     opts = Options(keep_orientation=not args.drop_orientation, keep_workflow=args.keep_workflow,
                    keep_dates=not args.new_dates)
     save_copy = args.copy and not args.dry_run
+    cache = None if args.recheck else CleanCache(app_dir() / "clean_cache.json")
     t0 = time.time()
     with open(log_path, "w", encoding="utf-8") as log:
         log.write(f"paths={[str(p) for p in args.paths]} dry_run={args.dry_run}\n")
-        for i, p in enumerate(targets, 1):
-            t1 = time.time()
-            try:
-                dest = copy_destination(p, args.paths) if save_copy else None
-                status = strip_file(p, opts, args.dry_run, dest=dest)
-            except StripError as e:
-                status = "failed"
-                log.write(f"FAILED {p}: {e}\n")
-                print(f"\n  失敗：{p}（{e}）")
-            counts[status] += 1
-            log.write(f"{status} {p}\n")
+        dest_for = (lambda p: copy_destination(p, args.paths)) if save_copy else None
+        for i, r in enumerate(batch.run(targets, opts, args.dry_run, dest_for, cache), 1):
+            p = r.path
+            if r.error:
+                log.write(f"FAILED {p}: {r.error}\n")
+                print(f"\n  失敗：{p}（{r.error}）")
+            counts[r.status] += 1
+            log.write(f"{r.status} {p}\n")
             eta = (time.time() - t0) / i * (len(targets) - i)
             name = p.name if len(p.name) <= 40 else "…" + p.name[-39:]
             bar = "#" * int(30 * i / len(targets))
             sys.stdout.write(f"\r[{bar:<30}] {i}/{len(targets)} {100 * i / len(targets):5.1f}% "
-                             f"本檔 {time.time() - t1:4.1f}s 剩餘 {fmt_time(eta)}  {name:<40}")
+                             f"本檔 {r.took:4.1f}s 剩餘 {fmt_time(eta)}  {name:<40}")
             sys.stdout.flush()
         for p in unsupported:
             log.write(f"unsupported {p}\n")
@@ -105,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     verb = "需要清除" if args.dry_run else "已清除"
     print(f"完成，耗時 {fmt_time(time.time() - t0)}：{verb} {counts[CLEANED]} 個、"
           f"本來就乾淨 {counts[CLEAN]} 個、失敗 {counts['failed']} 個。")
+    if cache and cache.hits:
+        print(f"（其中 {cache.hits} 個上次已確認乾淨、之後沒改過，直接略過）")
     if unsupported:
         print(f"另有 {len(unsupported)} 個不支援的格式（HEIC/TIFF/GIF 等）沒有處理，清單在紀錄檔。")
     print(f"紀錄檔：{log_path}")

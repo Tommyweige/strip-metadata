@@ -283,11 +283,12 @@ def _finish(tmp: Path, dest: Path, src_stat: os.stat_result, keep_dates: bool) -
 
 
 def strip_file(path: Path, options: Options | None = None, dry_run: bool = False,
-               dest: Path | None = None) -> str:
+               dest: Path | None = None, cache=None) -> str:
     """Clean one file. Overwrites it, or writes the result to `dest` (save-copy mode).
 
     Returns CLEANED or CLEAN; raises StripError on failure, leaving the original untouched.
     In save-copy mode a CLEAN file is still copied to `dest`, so the new folder is complete.
+    `cache` (a CleanCache) lets unchanged files that were already clean be skipped unread.
     """
     opts = options or Options()
     path = Path(path)
@@ -296,33 +297,13 @@ def strip_file(path: Path, options: Options | None = None, dry_run: bool = False
     tmp = target.with_name(target.stem + TMP_MARK + target.suffix)
     try:
         st = path.stat()
-        if ext in VIDEO_EXT:
-            dirty = video_has_metadata(path)
-            if not dry_run:
-                if dirty:
-                    tmp.parent.mkdir(parents=True, exist_ok=True)
-                    strip_video(path, tmp)
-                    _finish(tmp, target, st, opts.keep_dates)
-                elif dest:
-                    _copy(path, target, opts.keep_dates)
-            return CLEANED if dirty else CLEAN
-        data = path.read_bytes()
-        if ext in JPEG_EXT:
-            new = strip_jpeg(data, opts.keep_orientation)
-        elif ext in PNG_EXT:
-            new = strip_png(data, opts.keep_workflow)
-        elif ext in WEBP_EXT:
-            new = strip_webp(data)
-        else:
-            raise StripError("不支援的格式")
-        if not dry_run:
-            if new is not None:
-                tmp.parent.mkdir(parents=True, exist_ok=True)
-                tmp.write_bytes(new)
-                _finish(tmp, target, st, opts.keep_dates)
-            elif dest:
-                _copy(path, target, opts.keep_dates)
-        return CLEAN if new is None else CLEANED
+        fp = cache.fingerprint(opts) if cache is not None else ""
+        if cache is not None and not dest and cache.is_clean(path, st, fp):
+            return CLEAN
+        status = _strip(path, ext, st, opts, dry_run, dest, target, tmp)
+        if cache is not None and not dest and (status == CLEAN or not dry_run):
+            cache.mark_clean(path, fp)
+        return status
     except PermissionError as e:
         raise StripError("檔案正被其他程式開啟（例如瀏覽器或播放器正在播放、預覽），或是唯讀檔；"
                          "關掉那個程式後再試一次") from e
@@ -330,6 +311,36 @@ def strip_file(path: Path, options: Options | None = None, dry_run: bool = False
         raise StripError(f"讀寫失敗：{e.strerror or e}") from e
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
+    if ext in VIDEO_EXT:
+        dirty = video_has_metadata(path)
+        if not dry_run:
+            if dirty:
+                tmp.parent.mkdir(parents=True, exist_ok=True)
+                strip_video(path, tmp)
+                _finish(tmp, target, st, opts.keep_dates)
+            elif dest:
+                _copy(path, target, opts.keep_dates)
+        return CLEANED if dirty else CLEAN
+    data = path.read_bytes()
+    if ext in JPEG_EXT:
+        new = strip_jpeg(data, opts.keep_orientation)
+    elif ext in PNG_EXT:
+        new = strip_png(data, opts.keep_workflow)
+    elif ext in WEBP_EXT:
+        new = strip_webp(data)
+    else:
+        raise StripError("不支援的格式")
+    if not dry_run:
+        if new is not None:
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(new)
+            _finish(tmp, target, st, opts.keep_dates)
+        elif dest:
+            _copy(path, target, opts.keep_dates)
+    return CLEAN if new is None else CLEANED
 
 
 def _copy(src: Path, dest: Path, keep_dates: bool) -> None:
