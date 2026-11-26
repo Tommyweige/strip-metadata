@@ -36,6 +36,8 @@ FONT = "Microsoft JhengHei UI"
 ACCENT = "#2563eb"
 WARN = "#b45309"
 BATCH_WAIT = 0.4  # seconds to collect paths arriving from several right-click launches
+CROP_LABELS = {"": "不裁切", "9:16": "直式 9:16", "16:9": "橫式 16:9"}
+CROP_VALUES = {label: value for value, label in CROP_LABELS.items()}
 
 
 class App:
@@ -65,11 +67,12 @@ class App:
         self.keep_dates = tk.BooleanVar(value=s.keep_dates)
         self.check_updates = tk.BooleanVar(value=s.check_updates)
         self.remember_clean = tk.BooleanVar(value=s.remember_clean)
+        self.crop_video = tk.StringVar(value=s.crop_video)
         self.cache_path = (settings_path.parent if settings_path else app_dir()) / "clean_cache.json"
         self.cache: CleanCache | None = None
         self.dry_run = tk.BooleanVar(value=False)
         for name in ("keep_orientation", "keep_workflow", "save_copy", "keep_dates", "check_updates",
-                     "remember_clean"):
+                     "remember_clean", "crop_video"):
             getattr(self, name).trace_add("write", lambda *_: self._save_settings())
 
         self._build()
@@ -85,12 +88,13 @@ class App:
         s.keep_dates = self.keep_dates.get()
         s.check_updates = self.check_updates.get()
         s.remember_clean = self.remember_clean.get()
+        s.crop_video = self.crop_video.get()
         s.save(self.settings_path)
         self._refresh_copy_banner()
 
     def options(self) -> Options:
         return Options(keep_orientation=self.keep_orientation.get(), keep_workflow=self.keep_workflow.get(),
-                       keep_dates=self.keep_dates.get())
+                       keep_dates=self.keep_dates.get(), crop=self.crop_video.get())
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
@@ -157,6 +161,14 @@ class App:
                           ("略過上次已清理、之後沒改過的檔案（加快速度）", self.remember_clean),
                           ("自動檢查新版本（只讀取 GitHub 上的版本號）", self.check_updates)):
             ttk.Checkbutton(self.adv, text=text, variable=var).pack(anchor="w", pady=1)
+        crop_row = ttk.Frame(self.adv)
+        crop_row.pack(fill="x", pady=(4, 0))
+        ttk.Label(crop_row, text="裁切影片：").pack(side="left")
+        self.crop_combo = ttk.Combobox(crop_row, state="readonly", width=16,
+                                       values=["不裁切", "直式 9:16", "橫式 16:9"])
+        self.crop_combo.pack(side="left")
+        self.crop_combo.set(CROP_LABELS.get(self.crop_video.get(), "不裁切"))
+        self.crop_combo.bind("<<ComboboxSelected>>", self._on_crop_selected)
         menu_row = ttk.Frame(self.adv)
         menu_row.pack(fill="x", pady=(6, 0))
         self.btn_menu = ttk.Button(menu_row, command=self._toggle_menu)
@@ -195,6 +207,9 @@ class App:
     def _toggle_advanced(self) -> None:
         self._show_advanced(not self.settings.advanced_open)
         self.settings.save(self.settings_path)
+
+    def _on_crop_selected(self, _event=None) -> None:
+        self.crop_video.set(CROP_VALUES.get(self.crop_combo.get(), ""))
 
     def _refresh_copy_banner(self) -> None:
         if self.save_copy.get():
@@ -315,6 +330,9 @@ class App:
             return
         what = "重試" if retry else "找到"
         msg = f"{what}圖片 {len(targets) - n_vid} 張、影片 {n_vid} 部。"
+        if self.crop_video.get() and n_vid > 0:
+            ratio = self.crop_video.get()
+            msg += f"\n影片會從中間裁切成 {ratio}（需要重新編碼，畫質會略降，處理較久）。"
         if skipped_videos:
             msg += f"\n（找不到 ffmpeg，{skipped_videos} 部影片會略過）"
         save_copy = self.save_copy.get() and not self.dry_run.get()

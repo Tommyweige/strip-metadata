@@ -35,7 +35,7 @@ class CleanCache:
 
     @staticmethod
     def fingerprint(options) -> str:
-        return f"r{RULES_VERSION}o{int(options.keep_orientation)}w{int(options.keep_workflow)}"
+        return f"r{RULES_VERSION}o{int(options.keep_orientation)}w{int(options.keep_workflow)}c{options.crop}"
 
     def is_clean(self, path: Path, st: os.stat_result, fp: str) -> bool:
         with self.lock:
