@@ -197,6 +197,16 @@ class App:
         ttk.Label(foot, text=ffmpeg, style="Muted.TLabel").pack(side="left")
         ttk.Button(foot, text="開啟紀錄資料夾", command=lambda: os.startfile(log_dir())).pack(side="right")
         self._refresh_copy_banner()
+        self._fit_window()
+
+    def _fit_window(self) -> None:
+        """Grow the window so the progress bar, log and bottom row are never squeezed out of view."""
+        r = self.root
+        r.update_idletasks()
+        need = min(r.winfo_reqheight(), r.winfo_screenheight() - 80)
+        r.minsize(500, need)
+        if r.winfo_height() < need:
+            r.geometry(f"{max(r.winfo_width(), r.winfo_reqwidth())}x{need}")
 
     def _show_advanced(self, show: bool) -> None:
         if show:
@@ -208,6 +218,7 @@ class App:
 
     def _toggle_advanced(self) -> None:
         self._show_advanced(not self.settings.advanced_open)
+        self._fit_window()
         self.settings.save(self.settings_path)
 
     def _on_crop_selected(self, _event=None) -> None:
@@ -217,6 +228,7 @@ class App:
         if self.save_copy.get():
             self.copy_banner.configure(text="目前：另存到新資料夾（名稱後加「_已清除」），原檔不會被修改")
             self.copy_banner.pack(in_=self.copy_anchor, anchor="w", pady=(6, 0))
+            self._fit_window()
         else:
             self.copy_banner.pack_forget()
 
@@ -400,6 +412,7 @@ class App:
             self.update_info = (msg[1], msg[2])
             self.update_label.configure(text=f"有新版 v{msg[1]}，按這裡下載")
             self.update_label.pack(in_=self.top_anchor, anchor="w", pady=(0, 8))
+            self._fit_window()
         elif kind == "progress":
             _, i, n, p, status, err, took, eta = msg
             self.counts[status] += 1

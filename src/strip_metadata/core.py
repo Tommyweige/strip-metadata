@@ -21,6 +21,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .locks import who_locks
+
 JPEG_EXT = {".jpg", ".jpeg", ".jpe", ".jfif"}
 PNG_EXT = {".png"}
 WEBP_EXT = {".webp"}
@@ -358,6 +360,15 @@ def _finish(tmp: Path, dest: Path, src_stat: os.stat_result, keep_dates: bool) -
         os.utime(dest, (src_stat.st_atime, src_stat.st_mtime))
 
 
+def locked_message(*paths: Path) -> str:
+    """Error text for a file we may not write, naming the programs holding it when Windows knows."""
+    names = who_locks(*paths)
+    if names:
+        return (f"檔案正被「{'」、「'.join(names)}」開啟；關掉正在播放或預覽這個檔案的視窗"
+                "（瀏覽器的話關掉那個分頁）後再試一次")
+    return "檔案正被其他程式開啟（例如瀏覽器或播放器正在播放、預覽），或是唯讀檔；關掉那個程式後再試一次"
+
+
 def strip_file(path: Path, options: Options | None = None, dry_run: bool = False,
                dest: Path | None = None, cache=None) -> str:
     """Clean one file. Overwrites it, or writes the result to `dest` (save-copy mode).
@@ -381,8 +392,7 @@ def strip_file(path: Path, options: Options | None = None, dry_run: bool = False
             cache.mark_clean(path, fp)
         return status
     except PermissionError as e:
-        raise StripError("檔案正被其他程式開啟（例如瀏覽器或播放器正在播放、預覽），或是唯讀檔；"
-                         "關掉那個程式後再試一次") from e
+        raise StripError(locked_message(path, target)) from e
     except OSError as e:
         raise StripError(f"讀寫失敗：{e.strerror or e}") from e
     finally:
