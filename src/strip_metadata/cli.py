@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep-workflow", action="store_true", help="保留 PNG 裡的 AI 工作流程（ComfyUI 等）")
     ap.add_argument("--copy", action="store_true", help="另存到新資料夾（名稱後加 _已清除），原檔不動")
     ap.add_argument("--new-dates", action="store_true", help="不保留檔案日期")
+    ap.add_argument("--crop", choices=["9:16", "16:9"], default="",
+                    help="把影片從中間裁切成 9:16 或 16:9（會重新編碼）")
     ap.add_argument("--recheck", action="store_true", help="全部重新檢查（不略過上次已確認乾淨的檔案）")
     ap.add_argument("--log", type=Path, help="紀錄檔位置")
     ap.add_argument("--version", action="version", version=__version__)
@@ -76,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     log_path = args.log or log_dir() / time.strftime("strip_%Y%m%d_%H%M%S.log")
     counts = {CLEANED: 0, CLEAN: 0, "failed": 0}
     opts = Options(keep_orientation=not args.drop_orientation, keep_workflow=args.keep_workflow,
-                   keep_dates=not args.new_dates)
+                   keep_dates=not args.new_dates, crop=args.crop)
     save_copy = args.copy and not args.dry_run
     cache = None if args.recheck else CleanCache(app_dir() / "clean_cache.json")
     t0 = time.time()
