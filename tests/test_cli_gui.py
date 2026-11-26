@@ -171,3 +171,15 @@ def test_gui_update_check_can_be_off(root, tmp_path_factory):
     make_app(root, tmp_path_factory, settings=Settings(check_updates=False), fetch_update=lambda: calls.append(1))
     time.sleep(0.2)
     assert calls == []
+
+
+def test_optional_panels_are_not_hidden_behind_their_anchor(root, tmp_path_factory):
+    """Each optional panel must be drawn above the empty frame it is packed into."""
+    app = make_app(root, tmp_path_factory)
+    app._show_advanced(True)
+    root.update()
+    order = root.tk.splitlist(root.tk.call("winfo", "children", str(app.adv.master)))  # bottom to top
+    for panel, anchor in ((app.adv, app.adv_anchor), (app.copy_banner, app.copy_anchor),
+                          (app.update_label, app.top_anchor)):
+        assert order.index(str(panel)) > order.index(str(anchor)), f"{panel} is hidden by {anchor}"
+    assert app.adv.winfo_manager() == "pack" and app.adv.winfo_reqheight() > 50

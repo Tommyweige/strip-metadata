@@ -112,12 +112,14 @@ class App:
 
         main = ttk.Frame(r, padding=16)
         main.pack(fill="both", expand=True)
-        self.update_label = ttk.Label(main, style="Link.TLabel", cursor="hand2")
-        self.update_label.bind("<Button-1>", lambda _: self._open_update())
+        # Each optional panel is packed into an empty anchor frame. The anchor must be created
+        # BEFORE the panel: a sibling created later is drawn on top and would hide the panel.
         ttk.Label(main, text="清除相片與影片的 EXIF、GPS、AI 來源標記", style="Title.TLabel").pack(anchor="w")
         ttk.Label(main, text="會處理所有子資料夾，畫質不變。", style="Muted.TLabel").pack(anchor="w", pady=(2, 10))
         self.top_anchor = ttk.Frame(main)  # update banner goes here
         self.top_anchor.pack(fill="x")
+        self.update_label = ttk.Label(main, style="Link.TLabel", cursor="hand2")
+        self.update_label.bind("<Button-1>", lambda _: self._open_update())
 
         self.drop = tk.Label(main, font=(FONT, 12), fg=ACCENT, bg="#eef4ff", relief="groove", bd=2, height=4)
         self.drop.pack(fill="x")
@@ -131,9 +133,9 @@ class App:
                 pass
         self.drop.configure(text="把資料夾或檔案拖到這裡" if self.dnd_enabled else "按下方按鈕選擇資料夾或檔案")
 
-        self.copy_banner = ttk.Label(main, style="Warn.TLabel")
         self.copy_anchor = ttk.Frame(main)
         self.copy_anchor.pack(fill="x")
+        self.copy_banner = ttk.Label(main, style="Warn.TLabel")
 
         btns = ttk.Frame(main)
         btns.pack(fill="x", pady=8)
@@ -151,9 +153,9 @@ class App:
         self.btn_adv = ttk.Button(opts, command=self._toggle_advanced, width=12)
         self.btn_adv.pack(side="right")
 
-        self.adv = ttk.LabelFrame(main, text="進階選項", padding=(10, 6))
         self.adv_anchor = ttk.Frame(main)
         self.adv_anchor.pack(fill="x")
+        self.adv = ttk.LabelFrame(main, text="進階選項", padding=(10, 6))
         for text, var in (("保留照片旋轉方向（建議）", self.keep_orientation),
                           ("保留 AI 工作流程（PNG 裡的 ComfyUI 等設定）", self.keep_workflow),
                           ("另存到新資料夾（原資料夾名稱後加「_已清除」，原檔不動）", self.save_copy),
