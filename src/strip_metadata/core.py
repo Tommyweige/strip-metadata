@@ -41,6 +41,7 @@ HARMLESS_VIDEO_TAGS = {"major_brand", "minor_version", "compatible_brands",
                        "handler_name", "vendor_id", "language", "encoder", "duration"}
 
 CLEANED, CLEAN = "cleaned", "clean"
+CROP_CHOICES = ("", "9:16", "16:9")
 
 
 class StripError(Exception):
@@ -230,16 +231,90 @@ def video_has_metadata(path: Path) -> bool:
     return any(k.lower() not in HARMLESS_VIDEO_TAGS for k in tags)
 
 
-def strip_video(path: Path, tmp: Path) -> None:
+def video_display_size(path: Path) -> tuple[int, int] | None:
+    """Width and height as seen during playback, after any rotation metadata is applied."""
+    ffprobe = find_tool("ffprobe")
+    if not ffprobe:
+        return None
+    r = _run([ffprobe, "-v", "error", "-select_streams", "v:0",
+              "-show_entries", "stream=width,height:stream_side_data=rotation:stream_tags=rotate",
+              "-of", "json", str(path)])
+    if r.returncode != 0:
+        return None
+    try:
+        info = json.loads(r.stdout or "{}")
+    except ValueError:
+        return None
+    streams = info.get("streams") or []
+    if not streams:
+        return None
+    stream = streams[0]
+    w, h = stream.get("width"), stream.get("height")
+    if not w or not h:
+        return None
+    angle = 0
+    for side_data in stream.get("side_data_list") or []:
+        if "rotation" in side_data:
+            angle = side_data["rotation"]
+            break
+    else:
+        angle = stream.get("tags", {}).get("rotate", 0)
+    try:
+        angle = abs(int(float(angle)))
+    except (TypeError, ValueError):
+        angle = 0
+    if angle % 180 == 90:
+        w, h = h, w
+    return int(w), int(h)
+
+
+def crop_box(w: int, h: int, ratio: str) -> tuple[int, int, int, int] | None:
+    """Centred, largest crop rectangle (cw, ch, x, y) for `ratio`; None when no crop is needed."""
+    if not ratio:
+        return None
+    a, b = ratio.split(":")
+    r = int(a) / int(b)
+    if w / h > r:
+        ch = h
+        cw = round(h * r)
+    else:
+        cw = w
+        ch = round(w / r)
+    cw -= cw % 2
+    ch -= ch % 2
+    x = (w - cw) // 2
+    y = (h - ch) // 2
+    x -= x % 2
+    y -= y % 2
+    if cw >= w - 2 and ch >= h - 2:
+        return None
+    return cw, ch, x, y
+
+
+def strip_video(path: Path, tmp: Path, crop_to: tuple[int, int, int, int] | None = None) -> None:
     ffmpeg = find_tool("ffmpeg")
     if not ffmpeg:
         raise StripError("找不到 ffmpeg，無法處理影片")
-    r = _run([ffmpeg, "-v", "error", "-y", "-i", str(path),
-              "-map", "0:v", "-map", "0:a?",  # data streams (e.g. GPS tracks) are dropped
-              "-map_metadata", "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1",
-              "-map_chapters", "-1", "-c", "copy",
-              "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
-              str(tmp)])
+    cmd = [ffmpeg, "-v", "error", "-y", "-i", str(path)]
+    if crop_to is None:
+        cmd += ["-map", "0:v", "-map", "0:a?",  # data streams (e.g. GPS tracks) are dropped
+                "-map_metadata", "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1",
+                "-map_chapters", "-1", "-c", "copy",
+                "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+                str(tmp)]
+    else:
+        cw, ch, x, y = crop_to
+        if path.suffix.lower() == ".webm":
+            codec = ["-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-pix_fmt", "yuv420p"]
+        else:
+            codec = ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
+        cmd += ["-map", "0:v:0", "-map", "0:a?",
+                "-vf", f"crop={cw}:{ch}:{x}:{y}",
+                "-map_metadata", "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1",
+                "-map_chapters", "-1", *codec, "-c:a", "copy",
+                "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+                str(tmp)]
+    r = _run(cmd)
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
         last = (r.stderr.strip().splitlines() or ["未知錯誤"])[-1]
         raise StripError("ffmpeg 失敗：" + last)
@@ -251,6 +326,7 @@ class Options:
     keep_orientation: bool = True
     keep_workflow: bool = False
     keep_dates: bool = True
+    crop: str = ""
 
 
 def copy_root(folder: Path) -> Path:
@@ -283,11 +359,12 @@ def _finish(tmp: Path, dest: Path, src_stat: os.stat_result, keep_dates: bool) -
 
 
 def strip_file(path: Path, options: Options | None = None, dry_run: bool = False,
-               dest: Path | None = None) -> str:
+               dest: Path | None = None, cache=None) -> str:
     """Clean one file. Overwrites it, or writes the result to `dest` (save-copy mode).
 
     Returns CLEANED or CLEAN; raises StripError on failure, leaving the original untouched.
     In save-copy mode a CLEAN file is still copied to `dest`, so the new folder is complete.
+    `cache` (a CleanCache) lets unchanged files that were already clean be skipped unread.
     """
     opts = options or Options()
     path = Path(path)
@@ -296,33 +373,13 @@ def strip_file(path: Path, options: Options | None = None, dry_run: bool = False
     tmp = target.with_name(target.stem + TMP_MARK + target.suffix)
     try:
         st = path.stat()
-        if ext in VIDEO_EXT:
-            dirty = video_has_metadata(path)
-            if not dry_run:
-                if dirty:
-                    tmp.parent.mkdir(parents=True, exist_ok=True)
-                    strip_video(path, tmp)
-                    _finish(tmp, target, st, opts.keep_dates)
-                elif dest:
-                    _copy(path, target, opts.keep_dates)
-            return CLEANED if dirty else CLEAN
-        data = path.read_bytes()
-        if ext in JPEG_EXT:
-            new = strip_jpeg(data, opts.keep_orientation)
-        elif ext in PNG_EXT:
-            new = strip_png(data, opts.keep_workflow)
-        elif ext in WEBP_EXT:
-            new = strip_webp(data)
-        else:
-            raise StripError("不支援的格式")
-        if not dry_run:
-            if new is not None:
-                tmp.parent.mkdir(parents=True, exist_ok=True)
-                tmp.write_bytes(new)
-                _finish(tmp, target, st, opts.keep_dates)
-            elif dest:
-                _copy(path, target, opts.keep_dates)
-        return CLEAN if new is None else CLEANED
+        fp = cache.fingerprint(opts) if cache is not None else ""
+        if cache is not None and not dest and cache.is_clean(path, st, fp):
+            return CLEAN
+        status = _strip(path, ext, st, opts, dry_run, dest, target, tmp)
+        if cache is not None and not dest and (status == CLEAN or not dry_run):
+            cache.mark_clean(path, fp)
+        return status
     except PermissionError as e:
         raise StripError("檔案正被其他程式開啟（例如瀏覽器或播放器正在播放、預覽），或是唯讀檔；"
                          "關掉那個程式後再試一次") from e
@@ -330,6 +387,37 @@ def strip_file(path: Path, options: Options | None = None, dry_run: bool = False
         raise StripError(f"讀寫失敗：{e.strerror or e}") from e
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
+    if ext in VIDEO_EXT:
+        box = crop_box(*size, opts.crop) if opts.crop and (size := video_display_size(path)) else None
+        dirty = box is not None or video_has_metadata(path)
+        if not dry_run:
+            if dirty:
+                tmp.parent.mkdir(parents=True, exist_ok=True)
+                strip_video(path, tmp, box)
+                _finish(tmp, target, st, opts.keep_dates)
+            elif dest:
+                _copy(path, target, opts.keep_dates)
+        return CLEANED if dirty else CLEAN
+    data = path.read_bytes()
+    if ext in JPEG_EXT:
+        new = strip_jpeg(data, opts.keep_orientation)
+    elif ext in PNG_EXT:
+        new = strip_png(data, opts.keep_workflow)
+    elif ext in WEBP_EXT:
+        new = strip_webp(data)
+    else:
+        raise StripError("不支援的格式")
+    if not dry_run:
+        if new is not None:
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(new)
+            _finish(tmp, target, st, opts.keep_dates)
+        elif dest:
+            _copy(path, target, opts.keep_dates)
+    return CLEAN if new is None else CLEANED
 
 
 def _copy(src: Path, dest: Path, keep_dates: bool) -> None:

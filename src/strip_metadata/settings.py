@@ -21,8 +21,10 @@ class Settings:
     save_copy: bool = False
     keep_dates: bool = True
     check_updates: bool = True
+    remember_clean: bool = True
     advanced_open: bool = False
     last_update_check: float = 0.0
+    crop_video: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> Settings:
@@ -38,6 +40,8 @@ class Settings:
             v = raw.get(f.name)
             if isinstance(v, type(getattr(s, f.name))) or (f.type == "float" and isinstance(v, int)):
                 setattr(s, f.name, v)
+        if s.crop_video not in ("", "9:16", "16:9"):
+            s.crop_video = ""
         return s
 
     def save(self, path: Path | None = None) -> None:

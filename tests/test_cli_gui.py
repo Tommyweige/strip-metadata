@@ -129,7 +129,7 @@ def test_gui_save_copy_and_settings(root, media_dir, monkeypatch, tmp_path_facto
 
 def test_gui_retry_failed(root, media_dir, monkeypatch, tmp_path_factory):
     monkeypatch.setattr("strip_metadata.gui.log_dir", lambda: tmp_path_factory.mktemp("logs"))
-    import strip_metadata.gui as gui
+    import strip_metadata.batch as gui
     real = gui.strip_file
     broken = {"on": True}
 
