@@ -4,7 +4,7 @@ import subprocess
 import pytest
 from conftest import HAS_FFMPEG, SECRET
 
-from strip_metadata.core import C2PA_UUID, CLEAN, CLEANED, bmff_has_c2pa, strip_file, video_has_metadata
+from strip_metadata.core import C2PA_UUID, CLEAN, CLEANED, bmff_metadata, strip_file, video_has_metadata
 
 
 def box(kind: bytes, payload: bytes) -> bytes:
@@ -18,7 +18,7 @@ def c2pa_box(payload: bytes = b"\0\0\0\0manifest\0" + b"jumb SECRET c2pa.actions
 def test_bmff_scan_finds_c2pa_uuid(tmp_path):
     p = tmp_path / "x.mp4"
     p.write_bytes(box(b"ftyp", b"isom\0\0\0\0") + box(b"free", b"") + c2pa_box())
-    assert bmff_has_c2pa(p)
+    assert ("C2PA" in bmff_metadata(p))
 
 
 def test_bmff_scan_ignores_other_uuid_and_handles_largesize(tmp_path):
@@ -26,15 +26,15 @@ def test_bmff_scan_ignores_other_uuid_and_handles_largesize(tmp_path):
     large = struct.pack(">I", 1) + b"mdat" + struct.pack(">Q", 16 + 4) + b"abcd"
     p = tmp_path / "x.mp4"
     p.write_bytes(box(b"ftyp", b"isom\0\0\0\0") + other + large)
-    assert not bmff_has_c2pa(p)
+    assert "C2PA" not in bmff_metadata(p)
     p.write_bytes(p.read_bytes() + c2pa_box())  # after a 64-bit sized box
-    assert bmff_has_c2pa(p)
+    assert ("C2PA" in bmff_metadata(p))
 
 
 def test_bmff_scan_survives_garbage(tmp_path):
     p = tmp_path / "x.mp4"
     p.write_bytes(b"\0\0\0\x03junk")
-    assert not bmff_has_c2pa(p)
+    assert "C2PA" not in bmff_metadata(p)
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="needs ffmpeg")
@@ -47,5 +47,5 @@ def test_video_whose_only_metadata_is_c2pa_gets_cleaned(tmp_path):
     assert video_has_metadata(p)
     assert strip_file(p) == CLEANED
     out = p.read_bytes()
-    assert SECRET not in out and C2PA_UUID not in out and not bmff_has_c2pa(p)
+    assert SECRET not in out and C2PA_UUID not in out and "C2PA" not in bmff_metadata(p)
     assert strip_file(p) == CLEAN

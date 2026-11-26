@@ -47,10 +47,10 @@ Windows 第一次開啟可能出現「Windows 已保護您的電腦」，按「�
 
 | 類型 | 格式 | 移除內容 |
 |---|---|---|
-| 相片 | JPEG | EXIF、XMP、IPTC、C2PA（APP11）、註解 |
-| 相片 | PNG | tEXt / zTXt / iTXt 文字、eXIf、時間、C2PA（caBX） |
-| 相片 | WebP | EXIF、XMP、C2PA |
-| 影片 | MP4 / MOV / M4V / MKV / WebM / AVI / 3GP | 標題、地點、建立時間等標籤、章節、GPS 等資料串流；MP4 / MOV / M4V / 3GP 另外移除 C2PA 內容憑證（uuid 區塊） |
+| 相片 | JPEG | EXIF、XMP（含延伸 XMP）、IPTC / Photoshop（APP13）、C2PA（APP11）、MPF、註解 |
+| 相片 | PNG | 所有顯示用不到的區塊：文字（含 XMP、IPTC / EXIF 設定檔、AI 提示詞）、eXIf、時間、C2PA（caBX）、各軟體的私有區塊；色彩、透明度、DPI、動畫保留 |
+| 相片 | WebP | EXIF、XMP、C2PA 及其他非影像區塊；色彩設定檔、透明度、動畫保留 |
+| 影片 | MP4 / MOV / M4V / MKV / WebM / AVI / 3GP | 標題、地點、建立時間等標籤、章節、GPS 等資料串流；MP4 / MOV / M4V / 3GP 另外移除 C2PA 內容憑證和 XMP（uuid 區塊、udta/XMP_） |
 
 HEIC、TIFF、GIF、RAW 不處理，完成時會列出數量。
 
