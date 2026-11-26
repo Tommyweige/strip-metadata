@@ -183,3 +183,14 @@ def test_optional_panels_are_not_hidden_behind_their_anchor(root, tmp_path_facto
                           (app.update_label, app.top_anchor)):
         assert order.index(str(panel)) > order.index(str(anchor)), f"{panel} is hidden by {anchor}"
     assert app.adv.winfo_manager() == "pack" and app.adv.winfo_reqheight() > 50
+
+
+def test_opening_advanced_grows_window_to_fit_everything(root, tmp_path_factory):
+    app = make_app(root, tmp_path_factory)
+    app._show_advanced(False)
+    app._fit_window()
+    closed = root.minsize()[1]
+    app._toggle_advanced()  # open
+    root.update_idletasks()
+    need = min(root.winfo_reqheight(), root.winfo_screenheight() - 80)
+    assert root.minsize()[1] == need > closed
