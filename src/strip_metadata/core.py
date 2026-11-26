@@ -216,7 +216,43 @@ def strip_webp(data: bytes) -> bytes | None:
 
 
 # ---------------------------------------------------------------- video
+# C2PA "Content Credentials" in MP4/MOV live in a top-level `uuid` box with this extended type.
+C2PA_UUID = bytes.fromhex("d8fec3d61b0e483c92975828877ec481")
+BMFF_EXT = {".mp4", ".mov", ".m4v", ".3gp"}
+
+
+def bmff_has_c2pa(path: Path) -> bool:
+    """True if an MP4/MOV file carries a C2PA manifest (ffprobe does not report it as a tag)."""
+    try:
+        with open(path, "rb") as f:
+            size_left = os.fstat(f.fileno()).st_size
+            pos = 0
+            for _ in range(100_000):
+                if size_left - pos < 8:
+                    return False
+                f.seek(pos)
+                size, kind = struct.unpack(">I4s", f.read(8))
+                header = 8
+                if size == 1:
+                    size = struct.unpack(">Q", f.read(8))[0]
+                    header = 16
+                elif size == 0:
+                    size = size_left - pos
+                if size < header:
+                    return False
+                if kind in (b"c2pa", b"jumb"):
+                    return True
+                if kind == b"uuid" and f.read(16) == C2PA_UUID:
+                    return True
+                pos += size
+    except (OSError, struct.error):
+        return False
+    return False
+
+
 def video_has_metadata(path: Path) -> bool:
+    if Path(path).suffix.lower() in BMFF_EXT and bmff_has_c2pa(path):
+        return True
     ffprobe = find_tool("ffprobe")
     if not ffprobe:
         return True  # cannot tell, try anyway
@@ -320,6 +356,8 @@ def strip_video(path: Path, tmp: Path, crop_to: tuple[int, int, int, int] | None
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
         last = (r.stderr.strip().splitlines() or ["未知錯誤"])[-1]
         raise StripError("ffmpeg 失敗：" + last)
+    if tmp.suffix.lower() in BMFF_EXT and bmff_has_c2pa(tmp):
+        raise StripError("影片裡的 C2PA 內容憑證沒有被移除，原檔未修改")
 
 
 # ---------------------------------------------------------------- driver
