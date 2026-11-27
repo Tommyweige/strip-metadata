@@ -18,7 +18,7 @@ WORKERS = max(2, min(6, os.cpu_count() or 2))
 @dataclass
 class Result:
     path: Path
-    status: str  # CLEANED | CLEAN | "failed"
+    status: str  # CLEANED | WATERMARK | CLEAN | "failed"
     error: str | None
     took: float
     dest: Path | None

@@ -31,11 +31,11 @@ jobs:
 
       - name: Build exe
         run: |
-          python -m pip install -e ".[build,dnd,dev]"
+          python -m pip install -e ".[build,dnd,dev,watermark]"
           python scripts/build_exe.py
 
       - name: Smoke test exe
-        run: python scripts/smoke_test.py dist/StripMetadata.exe
+        run: python scripts/smoke_test.py dist/StripMetadata.exe --watermark
 
       # Code signing via SignPath Foundation. Runs only after the project is approved and
       # SIGNPATH_API_TOKEN (secret) + SIGNPATH_ORGANIZATION_ID / SIGNPATH_PROJECT_SLUG /

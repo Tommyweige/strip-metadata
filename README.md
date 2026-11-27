@@ -5,6 +5,7 @@
 - **畫質不變**：圖片只拿掉資料區塊，像素資料逐位元組保留；影片用 ffmpeg 直接搬移串流，不重新編碼。
 - **不會轉歪**：保留照片旋轉方向、色彩描述檔、影片旋轉方向。
 - **保留檔案日期**：修改時間維持原樣。
+- **可選：去除 AI 浮水印**：在進階選項打開後，會找出相片上看得到的 AI 浮水印（例如 Gemini 的星形標誌）並補上畫面。
 - **快**：同時處理多個檔案；已經清過、之後沒改過的檔案下次直接略過。
 
 ## 下載
@@ -40,6 +41,7 @@ Windows 第一次開啟可能出現「Windows 已保護您的電腦」，按「�
 - **保留檔案日期**（預設開）：修改時間維持原樣；關掉則改成清除的時間。
 - **略過上次已清理、之後沒改過的檔案**（預設開）：記住已經乾淨的檔案，下次同一批資料夾幾乎瞬間跑完；檔案有任何修改就會重新檢查。
 - **裁切影片**（預設不裁切）：把影片從中間裁切成直式 9:16 或橫式 16:9，適合上傳短影音或 YouTube。已經是這個比例的影片不動。裁切需要重新編碼，畫質會略降、處理較久；相片不會被裁切。
+- **去除相片上的 AI 浮水印**（預設關）：找出 Gemini 星形標誌、豆包／即夢等 AI 工具印在相片上的已知浮水印，用 AI 補上那塊畫面，同時照常清除附加資料。只有找到浮水印的相片會被重新編碼（最高畫質），其餘相片照舊不動畫質；影片和藏在像素裡的隱形浮水印不處理。所有運算都在本機進行，不需要網路。
 - **自動檢查新版本**（預設開）：見下方〈隱私〉。
 - **加入右鍵選單／移除右鍵選單**：在檔案總管對資料夾、資料夾空白處、相片或影片按右鍵，就有「清除相片資訊」。只寫入目前使用者的登錄，不需要系統管理員權限；一次選多個檔案只會開一個視窗。
 
@@ -60,13 +62,13 @@ HEIC、TIFF、GIF、RAW 不處理，完成時會列出數量。
 StripMetadata.exe --cli "D:\Photos" --yes
 ```
 
-`--dry-run` 只檢查，`--drop-orientation` 連旋轉方向一起移除，`--keep-workflow` 保留 AI 工作流程，`--copy` 另存到「資料夾名_已清除」，`--new-dates` 不保留檔案日期，`--recheck` 全部重新檢查，`--log <檔案>` 指定紀錄檔，`--crop 9:16` 或 `--crop 16:9` 裁切影片。
+`--dry-run` 只檢查，`--drop-orientation` 連旋轉方向一起移除，`--keep-workflow` 保留 AI 工作流程，`--copy` 另存到「資料夾名_已清除」，`--new-dates` 不保留檔案日期，`--recheck` 全部重新檢查，`--log <檔案>` 指定紀錄檔，`--crop 9:16` 或 `--crop 16:9` 裁切影片，`--remove-watermark` 去除相片上的 AI 浮水印。
 
 ## 開發
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev,build,dnd]"
+.\.venv\Scripts\python -m pip install -e ".[dev,build,dnd,watermark]"
 .\.venv\Scripts\python -m pytest
 .\.venv\Scripts\ruff check .
 .\.venv\Scripts\python scripts\build_exe.py          # 產生 dist\StripMetadata.exe
@@ -92,7 +94,9 @@ git push origin main --tags
 
 這個程式不收集、不上傳任何資料；所有檔案都在你的電腦上處理。
 
-唯一的網路連線是「自動檢查新版本」：開啟程式時最多每天一次，向 GitHub（`api.github.com`）讀取本專案最新的版本號，不送出任何檔案、路徑或個人資料。可以在「進階選項」取消勾選「自動檢查新版本」關掉。GitHub 的資料處理方式見 [GitHub 隱私聲明](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)。
+唯一的網路連線是「自動檢查新版本」：開啟程式時最多每天一次，向 GitHub（`api.github.com`）讀取本專案最新的版本號，不送出任何檔案、路徑或個人資料。可以在「進階選項」取消勾選「自動檢查新版本」關掉。
+
+去除 AI 浮水印用的模型已經附在 .exe 裡，離線執行。從原始碼安裝時，第一次使用會從 Hugging Face 下載一次這個模型（約 30 MB）。GitHub 的資料處理方式見 [GitHub 隱私聲明](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)。
 
 ## Code signing policy
 
@@ -105,4 +109,4 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 ## 授權
 
-MIT。含 ffmpeg 的 zip 內附 ffmpeg（GPL），授權和原始碼連結在 `ffmpeg` 資料夾。
+MIT。去除 AI 浮水印的功能使用 [remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks)（Apache-2.0）和 [MI-GAN](https://huggingface.co/andraniksargsyan/migan) 模型（MIT），授權條款隨 .exe 附上。含 ffmpeg 的 zip 內附 ffmpeg（GPL），授權和原始碼連結在 `ffmpeg` 資料夾。

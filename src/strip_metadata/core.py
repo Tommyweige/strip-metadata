@@ -47,6 +47,7 @@ HARMLESS_VIDEO_TAGS = {"major_brand", "minor_version", "compatible_brands",
                        "handler_name", "vendor_id", "language", "encoder", "duration"}
 
 CLEANED, CLEAN = "cleaned", "clean"
+WATERMARK = "watermark"  # cleaned, and a visible AI watermark was removed from the picture
 CROP_CHOICES = ("", "9:16", "16:9")
 
 
@@ -390,6 +391,7 @@ class Options:
     keep_workflow: bool = False
     keep_dates: bool = True
     crop: str = ""
+    remove_watermark: bool = False
 
 
 def copy_root(folder: Path) -> Path:
@@ -473,6 +475,16 @@ def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
                 _copy(path, target, opts.keep_dates)
         return CLEANED if dirty else CLEAN
     data = path.read_bytes()
+    marks: list[str] = []
+    if opts.remove_watermark and ext in IMAGE_EXT:
+        from . import watermark
+
+        try:
+            pixels, marks = watermark.remove(path, dry_run)
+        except watermark.WatermarkError as e:
+            raise StripError(str(e)) from e
+        if pixels is not None:
+            data = pixels
     if ext in JPEG_EXT:
         new = strip_jpeg(data, opts.keep_orientation)
     elif ext in PNG_EXT:
@@ -481,6 +493,8 @@ def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
         new = strip_webp(data)
     else:
         raise StripError("不支援的格式")
+    if marks and new is None:  # the re-encoded picture carries no metadata, but still has to be written
+        new = data
     if not dry_run:
         if new is not None:
             tmp.parent.mkdir(parents=True, exist_ok=True)
@@ -488,6 +502,8 @@ def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
             _finish(tmp, target, st, opts.keep_dates)
         elif dest:
             _copy(path, target, opts.keep_dates)
+    if marks:
+        return WATERMARK
     return CLEAN if new is None else CLEANED
 
 

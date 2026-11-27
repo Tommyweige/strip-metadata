@@ -7,12 +7,13 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__, batch
+from . import __version__, batch, watermark
 from .cache import CleanCache
 from .core import (
     CLEAN,
     CLEANED,
     VIDEO_EXT,
+    WATERMARK,
     Options,
     copy_destination,
     copy_root,
@@ -46,11 +47,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--new-dates", action="store_true", help="不保留檔案日期")
     ap.add_argument("--crop", choices=["9:16", "16:9"], default="",
                     help="把影片從中間裁切成 9:16 或 16:9（會重新編碼）")
+    ap.add_argument("--remove-watermark", action="store_true",
+                    help="去除相片上看得到的 AI 浮水印（例如 Gemini 星形標誌；會重新編碼相片）")
     ap.add_argument("--recheck", action="store_true", help="全部重新檢查（不略過上次已確認乾淨的檔案）")
     ap.add_argument("--log", type=Path, help="紀錄檔位置")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
 
+    if args.remove_watermark and not watermark.available():
+        print("沒有安裝去除浮水印的元件（pip install -e \".[watermark]\"）。")
+        return 2
     missing = [p for p in args.paths if not p.exists()]
     if missing:
         print("找不到：" + "、".join(map(str, missing)))
@@ -76,9 +82,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     log_path = args.log or log_dir() / time.strftime("strip_%Y%m%d_%H%M%S.log")
-    counts = {CLEANED: 0, CLEAN: 0, "failed": 0}
+    counts = {CLEANED: 0, WATERMARK: 0, CLEAN: 0, "failed": 0}
     opts = Options(keep_orientation=not args.drop_orientation, keep_workflow=args.keep_workflow,
-                   keep_dates=not args.new_dates, crop=args.crop)
+                   keep_dates=not args.new_dates, crop=args.crop,
+                   remove_watermark=args.remove_watermark)
     save_copy = args.copy and not args.dry_run
     cache = None if args.recheck else CleanCache(app_dir() / "clean_cache.json")
     t0 = time.time()
@@ -103,8 +110,11 @@ def main(argv: list[str] | None = None) -> int:
         log.write(f"summary {counts}\n")
     print()
     verb = "需要清除" if args.dry_run else "已清除"
-    print(f"完成，耗時 {fmt_time(time.time() - t0)}：{verb} {counts[CLEANED]} 個、"
+    print(f"完成，耗時 {fmt_time(time.time() - t0)}：{verb} {counts[CLEANED] + counts[WATERMARK]} 個、"
           f"本來就乾淨 {counts[CLEAN]} 個、失敗 {counts['failed']} 個。")
+    if counts[WATERMARK]:
+        what = "有" if args.dry_run else "去除了"
+        print(f"（其中 {counts[WATERMARK]} 個{what} AI 浮水印）")
     if cache and cache.hits:
         print(f"（其中 {cache.hits} 個上次已確認乾淨、之後沒改過，直接略過）")
     if unsupported:
