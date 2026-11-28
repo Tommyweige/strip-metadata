@@ -25,6 +25,7 @@ class Settings:
     advanced_open: bool = False
     last_update_check: float = 0.0
     crop_video: str = ""
+    remove_watermark: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> Settings:

@@ -35,7 +35,8 @@ class CleanCache:
 
     @staticmethod
     def fingerprint(options) -> str:
-        return f"r{RULES_VERSION}o{int(options.keep_orientation)}w{int(options.keep_workflow)}c{options.crop}"
+        return (f"r{RULES_VERSION}o{int(options.keep_orientation)}w{int(options.keep_workflow)}c{options.crop}"
+                + ("m" if getattr(options, "remove_watermark", False) else ""))
 
     def is_clean(self, path: Path, st: os.stat_result, fp: str) -> bool:
         with self.lock:

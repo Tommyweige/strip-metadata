@@ -11,13 +11,14 @@ from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import __version__, batch, integration, updates
+from . import __version__, batch, integration, updates, watermark
 from .cache import CleanCache
 from .cli import fmt_time, log_dir
 from .core import (
     CLEAN,
     CLEANED,
     VIDEO_EXT,
+    WATERMARK,
     Options,
     copy_destination,
     copy_root,
@@ -52,7 +53,7 @@ class App:
         self.q: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
         self.state = "idle"  # idle | scanning | running | done
-        self.counts = {CLEANED: 0, CLEAN: 0, "failed": 0}
+        self.counts = {CLEANED: 0, WATERMARK: 0, CLEAN: 0, "failed": 0}
         self.failed: list[Path] = []
         self.roots: list[Path] = []
         self.pending: list[Path] = []
@@ -68,11 +69,13 @@ class App:
         self.check_updates = tk.BooleanVar(value=s.check_updates)
         self.remember_clean = tk.BooleanVar(value=s.remember_clean)
         self.crop_video = tk.StringVar(value=s.crop_video)
+        self.has_watermark_tool = watermark.available()
+        self.remove_watermark = tk.BooleanVar(value=s.remove_watermark and self.has_watermark_tool)
         self.cache_path = (settings_path.parent if settings_path else app_dir()) / "clean_cache.json"
         self.cache: CleanCache | None = None
         self.dry_run = tk.BooleanVar(value=False)
         for name in ("keep_orientation", "keep_workflow", "save_copy", "keep_dates", "check_updates",
-                     "remember_clean", "crop_video"):
+                     "remember_clean", "crop_video", "remove_watermark"):
             getattr(self, name).trace_add("write", lambda *_: self._save_settings())
 
         self._build()
@@ -89,12 +92,15 @@ class App:
         s.check_updates = self.check_updates.get()
         s.remember_clean = self.remember_clean.get()
         s.crop_video = self.crop_video.get()
+        if self.has_watermark_tool:  # don't forget the choice on a build without the component
+            s.remove_watermark = self.remove_watermark.get()
         s.save(self.settings_path)
         self._refresh_copy_banner()
 
     def options(self) -> Options:
         return Options(keep_orientation=self.keep_orientation.get(), keep_workflow=self.keep_workflow.get(),
-                       keep_dates=self.keep_dates.get(), crop=self.crop_video.get())
+                       keep_dates=self.keep_dates.get(), crop=self.crop_video.get(),
+                       remove_watermark=self.remove_watermark.get())
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
@@ -163,6 +169,11 @@ class App:
                           ("略過上次已清理、之後沒改過的檔案（加快速度）", self.remember_clean),
                           ("自動檢查新版本（只讀取 GitHub 上的版本號）", self.check_updates)):
             ttk.Checkbutton(self.adv, text=text, variable=var).pack(anchor="w", pady=1)
+        wm_text = "去除 AI 浮水印（Gemini、Sora、Veo、可靈等；有浮水印的檔案會重新編碼，影片很慢）"
+        if not self.has_watermark_tool:
+            wm_text = "去除 AI 浮水印（這個版本沒有附這個功能）"
+        ttk.Checkbutton(self.adv, text=wm_text, variable=self.remove_watermark,
+                        state="normal" if self.has_watermark_tool else "disabled").pack(anchor="w", pady=1)
         crop_row = ttk.Frame(self.adv)
         crop_row.pack(fill="x", pady=(4, 0))
         ttk.Label(crop_row, text="裁切影片：").pack(side="left")
@@ -347,6 +358,10 @@ class App:
         if self.crop_video.get() and n_vid > 0:
             ratio = self.crop_video.get()
             msg += f"\n影片會從中間裁切成 {ratio}（需要重新編碼，畫質會略降，處理較久）。"
+        if self.remove_watermark.get():
+            msg += "\n會找出 AI 浮水印並補上畫面；有浮水印的檔案會重新編碼（高畫質）。"
+            if n_vid and watermark.video_available():
+                msg += "\n影片要逐格處理，很慢：8 秒的 1080p 影片約 5 分鐘。"
         if skipped_videos:
             msg += f"\n（找不到 ffmpeg，{skipped_videos} 部影片會略過）"
         save_copy = self.save_copy.get() and not self.dry_run.get()
@@ -362,7 +377,7 @@ class App:
             self._finish_idle("已取消。")
             return
         self.state = "running"
-        self.counts = {CLEANED: 0, CLEAN: 0, "failed": 0}
+        self.counts = {CLEANED: 0, WATERMARK: 0, CLEAN: 0, "failed": 0}
         self.failed = []
         self.bar.configure(maximum=len(targets), value=0)
         self.log_path = log_dir() / time.strftime("strip_%Y%m%d_%H%M%S.log")
@@ -427,9 +442,11 @@ class App:
             c = self.counts
             verb = "需要清除" if dry_run else "已清除"
             stopped = "（已中途停止）" if self.stop_event.is_set() else ""
-            summary = (f"完成{stopped}，耗時 {fmt_time(elapsed)}：{verb} {c[CLEANED]} 個、"
+            summary = (f"完成{stopped}，耗時 {fmt_time(elapsed)}：{verb} {c[CLEANED] + c[WATERMARK]} 個、"
                        f"本來就乾淨 {c[CLEAN]} 個、失敗 {c['failed']} 個。")
             self._write(summary)
+            if c[WATERMARK]:
+                self._write(f"其中 {c[WATERMARK]} 個{'有' if dry_run else '去除了'} AI 浮水印。")
             if self.cache and self.cache.hits:
                 self._write(f"其中 {self.cache.hits} 個上次已確認乾淨、之後沒改過，直接略過。")
             if n_unsup:

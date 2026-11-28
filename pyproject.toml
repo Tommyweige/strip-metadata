@@ -15,6 +15,10 @@ requires-python = ">=3.10"
 dnd = ["tkinterdnd2>=0.4"]
 dev = ["pytest>=8", "ruff>=0.6"]
 build = ["pyinstaller>=6.10"]
+# Visible AI watermark removal (Gemini, Sora, Veo, ...); the library needs Python 3.11+.
+# PyAV re-encodes videos whose mark was filled; ffmpeg itself is the one the app already uses.
+watermark = ["remove-ai-watermarks[migan]>=0.76,<0.77; python_version >= '3.11'",
+             "av>=18,<19; python_version >= '3.11'"]
 
 [project.scripts]
 strip-metadata = "strip_metadata.cli:main"

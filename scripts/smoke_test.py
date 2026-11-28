@@ -19,6 +19,9 @@ from conftest import SECRET, make_jpeg, make_mp4, make_png, make_webp  # noqa: E
 ap = argparse.ArgumentParser()
 ap.add_argument("exe", type=Path)
 ap.add_argument("--video", type=Path, help="ffmpeg.exe to create a test video with")
+ap.add_argument("--watermark", action="store_true",
+                help="also check the exe removes a Gemini sparkle offline (needs the watermark extra here);"
+                     " with --video, also a Veo mark from a video")
 args = ap.parse_args()
 exe = args.exe.resolve()
 
@@ -49,4 +52,29 @@ with tempfile.TemporaryDirectory() as tmp:
         probe = subprocess.run([str(args.video.parent / "ffprobe.exe"), "-v", "error", "-show_entries",
                                 "format_tags", "-of", "default", str(files[-1])], capture_output=True, text=True)
         assert "SECRET" not in probe.stdout, probe.stdout
+
+if args.watermark:
+    import test_watermark as tw
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp) / "marked"
+        d.mkdir()
+        f = tw._write(d / "gemini.png", tw._with_sparkle(tw._background()))
+        before = tw._pixels(f)
+        want_marks = 1
+        if args.video:  # env still hides every ffmpeg on PATH: the one next to the exe must be used
+            shutil.copyfile(tw.VEO, d / "veo.mp4")
+            want_marks = 2
+        # no model cache and no route to Hugging Face: the bundled model must be used
+        env = dict(env, HF_HOME=str(Path(tmp) / "no-hf"),
+                   HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9")
+        log = Path(tmp) / "wm.log"
+        r = subprocess.run([str(exe), "--cli", str(d), "--yes", "--remove-watermark", "--recheck",
+                            "--log", str(log)], env=env, timeout=600)
+        text = log.read_text(encoding="utf-8") if log.exists() else "(no log)"
+        print(text)
+        assert r.returncode == 0, f"watermark run exit code {r.returncode}"
+        assert f"'watermark': {want_marks}" in text, "watermark not removed"
+        x, y, s = tw._sparkle_box()
+        assert tw._pixels(f)[y:y + s, x:x + s].mean() < before[y:y + s, x:x + s].mean() - 15
 print("smoke test OK")
