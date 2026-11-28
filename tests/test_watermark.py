@@ -193,3 +193,49 @@ def test_gui_option_runs_and_is_remembered(marked_png, tmp_path, monkeypatch):
         assert "去除了 AI 浮水印" in app.text.get("1.0", "end")
     finally:
         root.destroy()
+
+
+def _rgb(img):
+    from PIL import Image
+
+    return Image.fromarray(img[..., ::-1])
+
+
+@pytest.mark.parametrize("name", ["anim.webp", "anim.png"])
+def test_animated_picture_keeps_its_frames(tmp_path, name):
+    from PIL import Image
+
+    frame = _rgb(_with_sparkle(_background()))
+    f = tmp_path / name
+    frame.save(f, save_all=True, append_images=[frame.rotate(5)], duration=200, loop=0)
+    assert not watermark.can_edit(f.read_bytes(), f.suffix)
+    assert strip_file(f, ON) in (CLEAN, CLEANED)
+    assert Image.open(f).n_frames == 2
+
+
+def test_16bit_png_is_left_to_metadata_cleaning(tmp_path):
+    import cv2
+
+    f = tmp_path / "deep.png"
+    ok, buf = cv2.imencode(".png", _with_sparkle(_background()).astype("uint16") * 257)
+    data = buf.tobytes()
+    f.write_bytes(data[:33] + png_chunk(b"tEXt", b"Comment\0SECRET") + data[33:])
+    assert not watermark.can_edit(f.read_bytes(), ".png")
+    assert strip_file(f, ON) == CLEANED
+    assert SECRET not in f.read_bytes()
+    assert cv2.imdecode(__import__("numpy").frombuffer(f.read_bytes(), "uint8"), cv2.IMREAD_UNCHANGED).dtype == "uint16"
+
+
+def test_still_pictures_are_editable(marked_png, tmp_path):
+    assert watermark.can_edit(marked_png.read_bytes(), ".png")
+    f = tmp_path / "s.webp"
+    _rgb(_with_sparkle(_background())).save(f, lossless=True)
+    assert watermark.can_edit(f.read_bytes(), ".webp")
+
+
+def test_non_ascii_file_name(marked_png, tmp_path):
+    d = tmp_path / "相片"
+    d.mkdir()
+    f = d / "星星.png"
+    f.write_bytes(marked_png.read_bytes())
+    assert strip_file(f, ON) == WATERMARK

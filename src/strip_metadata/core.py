@@ -479,12 +479,13 @@ def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
     if opts.remove_watermark and ext in IMAGE_EXT:
         from . import watermark
 
-        try:
-            pixels, marks = watermark.remove(path, dry_run)
-        except watermark.WatermarkError as e:
-            raise StripError(str(e)) from e
-        if pixels is not None:
-            data = pixels
+        if watermark.can_edit(data, ext):  # animated or 16-bit pictures keep their pixels
+            try:
+                pixels, marks = watermark.remove(path, dry_run)
+            except watermark.WatermarkError as e:
+                raise StripError(str(e)) from e
+            if pixels is not None:
+                data = pixels
     if ext in JPEG_EXT:
         new = strip_jpeg(data, opts.keep_orientation)
     elif ext in PNG_EXT:

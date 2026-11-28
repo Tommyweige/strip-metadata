@@ -33,6 +33,30 @@ def available() -> bool:
     return all(find_spec(m) is not None for m in ("remove_ai_watermarks", "cv2", "onnxruntime"))
 
 
+def can_edit(data: bytes, ext: str) -> bool:
+    """False for pictures the library would damage on rewrite: it reads one 8-bit frame, so an
+    animated PNG/WebP would lose its animation and a 16-bit PNG fails or loses precision."""
+    ext = ext.lower()
+    if ext == ".png":
+        if len(data) >= 25 and data[12:16] == b"IHDR" and data[24] == 16:
+            return False
+        pos = 8
+        while pos + 8 <= len(data):
+            length = int.from_bytes(data[pos:pos + 4], "big")
+            ctype = data[pos + 4:pos + 8]
+            if ctype == b"acTL":
+                return False
+            if ctype in (b"IDAT", b"IEND"):  # acTL must come before the image data
+                break
+            pos += 12 + length
+        return True
+    if ext == ".webp":
+        if data[12:16] == b"VP8X" and len(data) > 20 and data[20] & 0x02:  # animation flag
+            return False
+        return b"ANIM" not in data[12:4096]
+    return True
+
+
 def bundled_model_dir() -> Path | None:
     """The Hugging Face cache shipped with the .exe, if any."""
     if getattr(sys, "frozen", False):
