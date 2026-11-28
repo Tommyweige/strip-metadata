@@ -2,6 +2,10 @@
 
 Windows 小程式：無損移除相片與影片的附加資料（EXIF、GPS、C2PA 等）。用語以 `GLOSSARY.md` 為準。
 
+## 語言
+
+- 回覆使用者一律用繁體中文；思考過程可以用英文。
+
 ## 開發
 
 - 環境：`.venv`（`python -m pip install -e ".[dev,build,dnd]"`）
