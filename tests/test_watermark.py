@@ -1,12 +1,22 @@
 """Optional visible AI watermark removal (the `watermark` extra)."""
 import struct
+from pathlib import Path
 
 import pytest
 from conftest import SECRET, png_chunk
 
 from strip_metadata import cli, watermark
 from strip_metadata.cache import CleanCache
-from strip_metadata.core import CLEAN, CLEANED, WATERMARK, Options, StripError, strip_file
+from strip_metadata.core import (
+    CLEAN,
+    CLEANED,
+    WATERMARK,
+    Options,
+    StripError,
+    strip_file,
+    video_display_size,
+    video_has_metadata,
+)
 
 pytestmark = pytest.mark.skipif(not watermark.available(), reason="watermark extra not installed")
 
@@ -239,3 +249,35 @@ def test_non_ascii_file_name(marked_png, tmp_path):
     f = d / "星星.png"
     f.write_bytes(marked_png.read_bytes())
     assert strip_file(f, ON) == WATERMARK
+
+
+# tests/fixtures/veo_mark.mp4: first second of the synthetic Veo example from
+# remove-ai-watermarks (Apache-2.0), data/fixtures/visible/veo/example.mp4.
+VEO = Path(__file__).parent / "fixtures" / "veo_mark.mp4"
+needs_video = pytest.mark.skipif(not watermark.video_available(), reason="video watermark tools not installed")
+
+
+@needs_video
+def test_video_mark_removed_into_copy(tmp_path):
+    import subprocess
+
+    src = tmp_path / "veo.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(VEO), "-c", "copy", "-metadata", "title=SECRET",
+                    str(src)], check=True)
+    before = src.read_bytes()
+    dest = tmp_path / "out" / "veo.mp4"
+    assert strip_file(src, ON, dest=dest) == WATERMARK
+    assert src.read_bytes() == before
+    assert video_display_size(dest) == video_display_size(src)
+    assert not video_has_metadata(dest)
+    assert watermark.remove_video(dest, None) == []  # the mark is gone
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["veo.mp4"]  # no temp files left
+
+
+@needs_video
+def test_video_dry_run_only_looks(tmp_path):
+    f = tmp_path / "veo.mp4"
+    f.write_bytes(VEO.read_bytes())
+    assert strip_file(f, ON, dry_run=True) == WATERMARK
+    assert f.read_bytes() == VEO.read_bytes()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["veo.mp4"]

@@ -464,16 +464,7 @@ def strip_file(path: Path, options: Options | None = None, dry_run: bool = False
 
 def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
     if ext in VIDEO_EXT:
-        box = crop_box(*size, opts.crop) if opts.crop and (size := video_display_size(path)) else None
-        dirty = box is not None or video_has_metadata(path)
-        if not dry_run:
-            if dirty:
-                tmp.parent.mkdir(parents=True, exist_ok=True)
-                strip_video(path, tmp, box)
-                _finish(tmp, target, st, opts.keep_dates)
-            elif dest:
-                _copy(path, target, opts.keep_dates)
-        return CLEANED if dirty else CLEAN
+        return _strip_video_file(path, st, opts, dry_run, dest, target, tmp)
     data = path.read_bytes()
     marks: list[str] = []
     if opts.remove_watermark and ext in IMAGE_EXT:
@@ -506,6 +497,41 @@ def _strip(path, ext, st, opts, dry_run, dest, target, tmp) -> str:
     if marks:
         return WATERMARK
     return CLEAN if new is None else CLEANED
+
+
+def _strip_video_file(path, st, opts, dry_run, dest, target, tmp) -> str:
+    marks: list[str] = []
+    src = path
+    wm_tmp = target.with_name(target.stem + TMP_MARK + "wm" + target.suffix)
+    try:
+        if opts.remove_watermark:
+            from . import watermark
+
+            if watermark.video_available():
+                try:
+                    if dry_run:
+                        marks = watermark.remove_video(path, None)
+                    else:
+                        wm_tmp.parent.mkdir(parents=True, exist_ok=True)
+                        marks = watermark.remove_video(path, wm_tmp)
+                        if marks:
+                            src = wm_tmp  # metadata, cropping and C2PA checks run on the filled copy
+                except watermark.WatermarkError as e:
+                    raise StripError(str(e)) from e
+        box = crop_box(*size, opts.crop) if opts.crop and (size := video_display_size(src)) else None
+        dirty = bool(marks) or box is not None or video_has_metadata(src)
+        if not dry_run:
+            if dirty:
+                tmp.parent.mkdir(parents=True, exist_ok=True)
+                strip_video(src, tmp, box)
+                _finish(tmp, target, st, opts.keep_dates)
+            elif dest:
+                _copy(path, target, opts.keep_dates)
+    finally:
+        wm_tmp.unlink(missing_ok=True)
+    if marks:
+        return WATERMARK
+    return CLEANED if dirty else CLEAN
 
 
 def _copy(src: Path, dest: Path, keep_dates: bool) -> None:

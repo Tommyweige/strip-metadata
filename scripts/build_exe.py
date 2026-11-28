@@ -17,9 +17,9 @@ from strip_metadata import __version__, watermark  # noqa: E402
 MIGAN_REPO, MIGAN_FILE = "andraniksargsyan/migan", "migan.onnx"
 # Pulled in only by features the app does not use; keeps the exe from ballooning.
 EXCLUDE = ["torch", "torchvision", "torchaudio", "transformers", "diffusers", "scipy",
-           "matplotlib", "pandas", "av", "mcp", "audioseal", "librosa"]
+           "matplotlib", "pandas", "mcp", "audioseal", "librosa", "portable_ffmpeg", "portable_ffmpeg_full"]
 
-WATERMARK_MODULES = ["remove_ai_watermarks", "cv2", "onnxruntime", "huggingface_hub", "numpy", "c2pa"]
+WATERMARK_MODULES = ["remove_ai_watermarks", "cv2", "onnxruntime", "huggingface_hub", "numpy", "c2pa", "av"]
 WITH_WATERMARK = watermark.available() and "--no-watermark" not in sys.argv
 
 
@@ -44,6 +44,7 @@ def watermark_args() -> list[str]:
             shutil.copyfile(target, link)
     shutil.rmtree(cache / ".locks", ignore_errors=True)
     args = ["--collect-all", "remove_ai_watermarks", "--copy-metadata", "remove-ai-watermarks",
+            "--collect-submodules", "av",
             "--add-binary", f"{c2pa_dll()}{os.pathsep}c2pa/libs", "--add-data", f"{cache}{os.pathsep}hf"]
     for mod in EXCLUDE:
         args += ["--exclude-module", mod]

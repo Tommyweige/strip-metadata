@@ -1,9 +1,10 @@
-"""Optional removal of known visible AI watermarks (e.g. the Gemini sparkle) from photos.
+"""Optional removal of known visible AI watermarks (Gemini sparkle, Sora, Veo, ...).
 
 Built on the `remove-ai-watermarks` library (Apache-2.0,
 https://github.com/wiltodelta/remove-ai-watermarks), installed with the `watermark` extra.
 Unlike metadata stripping this changes pixels: the photo is re-encoded at maximum quality,
-so it only runs when the user turns it on. Only images are handled, not videos.
+so it only runs when the user turns it on. Videos with a mark are re-encoded frame by frame
+(slow) with PyAV, using the same ffmpeg the app already finds.
 
 The fill uses the MI-GAN model. The .exe ships it in `hf/` next to the app and runs offline;
 a source install downloads it from Hugging Face once on first use.
@@ -76,6 +77,51 @@ def _prepare_env() -> None:
         os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     _env_ready = True
+
+
+def video_available() -> bool:
+    """True when video marks can be handled too (needs PyAV and an ffmpeg/ffprobe pair)."""
+    from .core import find_tool
+
+    return available() and find_spec("av") is not None and all(find_tool(t) for t in ("ffmpeg", "ffprobe"))
+
+
+def _expose_ffmpeg() -> None:
+    """The library looks for ffmpeg/ffprobe on PATH only; point it at the ones next to the app."""
+    import shutil
+
+    from .core import find_tool
+
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return
+    if (ff := find_tool("ffmpeg")) and find_tool("ffprobe"):
+        os.environ["PATH"] = str(Path(ff).parent) + os.pathsep + os.environ.get("PATH", "")
+
+
+def remove_video(path: Path, out: Path | None) -> list[str]:
+    """Find known visible AI marks in a video (Sora, Veo, Kling, Hailuo, Vidu, ...).
+
+    With `out`, the video is re-encoded there with the marks filled in, audio copied; nothing
+    is written when no mark is found. Without `out` (a dry run) it only looks. Returns the
+    marks found. The original is never touched. Raises WatermarkError on failure.
+    """
+    if not video_available():
+        raise WatermarkError("沒有安裝去除影片浮水印的元件")
+    _prepare_env()
+    _expose_ffmpeg()
+    with _lock:
+        try:
+            import remove_ai_watermarks as raiw
+
+            if out is None:
+                report = raiw.identify_video(path)
+                return list(report.visible_marks or ((report.visible_mark,) if report.visible_mark else ()))
+            result = raiw.remove_video_visible(path, out, backend=BACKEND, strip_metadata=False)
+            return list(result.marks) if result.output is not None else []
+        except WatermarkError:
+            raise
+        except Exception as e:
+            raise WatermarkError(f"去除影片浮水印失敗：{e}") from e
 
 
 def remove(path: Path, dry_run: bool = False) -> tuple[bytes | None, list[str]]:

@@ -96,7 +96,7 @@ jobs:
 
       - name: Smoke test packaged ffmpeg build (video)
         shell: pwsh
-        run: python scripts/smoke_test.py pkg/StripMetadata/StripMetadata.exe --video "pkg/StripMetadata/ffmpeg/ffmpeg.exe"
+        run: python scripts/smoke_test.py pkg/StripMetadata/StripMetadata.exe --video "pkg/StripMetadata/ffmpeg/ffmpeg.exe" --watermark
 
       - uses: softprops/action-gh-release@v3
         with:

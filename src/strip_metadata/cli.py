@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--crop", choices=["9:16", "16:9"], default="",
                     help="把影片從中間裁切成 9:16 或 16:9（會重新編碼）")
     ap.add_argument("--remove-watermark", action="store_true",
-                    help="去除相片上看得到的 AI 浮水印（例如 Gemini 星形標誌；會重新編碼相片）")
+                    help="去除看得到的 AI 浮水印（Gemini、Sora、Veo 等；有浮水印的檔案會重新編碼，影片很慢）")
     ap.add_argument("--recheck", action="store_true", help="全部重新檢查（不略過上次已確認乾淨的檔案）")
     ap.add_argument("--log", type=Path, help="紀錄檔位置")
     ap.add_argument("--version", action="version", version=__version__)

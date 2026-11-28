@@ -169,9 +169,9 @@ class App:
                           ("略過上次已清理、之後沒改過的檔案（加快速度）", self.remember_clean),
                           ("自動檢查新版本（只讀取 GitHub 上的版本號）", self.check_updates)):
             ttk.Checkbutton(self.adv, text=text, variable=var).pack(anchor="w", pady=1)
-        wm_text = "去除相片上的 AI 浮水印（Gemini 星形標誌等；會重新編碼相片，影片不處理）"
+        wm_text = "去除 AI 浮水印（Gemini、Sora、Veo、可靈等；有浮水印的檔案會重新編碼，影片很慢）"
         if not self.has_watermark_tool:
-            wm_text = "去除相片上的 AI 浮水印（這個版本沒有附這個功能）"
+            wm_text = "去除 AI 浮水印（這個版本沒有附這個功能）"
         ttk.Checkbutton(self.adv, text=wm_text, variable=self.remove_watermark,
                         state="normal" if self.has_watermark_tool else "disabled").pack(anchor="w", pady=1)
         crop_row = ttk.Frame(self.adv)
@@ -358,8 +358,10 @@ class App:
         if self.crop_video.get() and n_vid > 0:
             ratio = self.crop_video.get()
             msg += f"\n影片會從中間裁切成 {ratio}（需要重新編碼，畫質會略降，處理較久）。"
-        if self.remove_watermark.get() and len(targets) > n_vid:
-            msg += "\n會找出相片上的 AI 浮水印並補上畫面；有浮水印的相片會重新編碼（最高畫質）。"
+        if self.remove_watermark.get():
+            msg += "\n會找出 AI 浮水印並補上畫面；有浮水印的檔案會重新編碼（高畫質）。"
+            if n_vid and watermark.video_available():
+                msg += "\n影片要逐格處理，很慢：8 秒的 1080p 影片約 5 分鐘。"
         if skipped_videos:
             msg += f"\n（找不到 ffmpeg，{skipped_videos} 部影片會略過）"
         save_copy = self.save_copy.get() and not self.dry_run.get()
